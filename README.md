@@ -21,6 +21,8 @@ This project includes practical robotics integration work beyond the model itsel
 - Next successful livestream with AI data collection: https://www.linkedin.com/posts/morgan-kuphal_another-successful-robotics-stream-activity-7456703091372113920-3htc
 - Local AI model training: https://x.com/KuphDev/status/2051039642045063511
 
+<img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/942075c8-bfbd-4a45-a3d8-8741a30c2786" />
+
 (below is the rest of the README for the Lerobot repo)
 
 <p align="center">
