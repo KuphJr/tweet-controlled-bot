@@ -24,7 +24,7 @@ This project includes practical robotics integration work beyond the model itsel
 <img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/942075c8-bfbd-4a45-a3d8-8741a30c2786" />
 <br>
 (below is the rest of the README for the Lerobot repo)
-
+<br>
 <p align="center">
   <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
 </p>
