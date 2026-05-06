@@ -11,6 +11,8 @@ The current MVP trains an ACT imitation-learning policy to control an SO-101 rob
 
 This project includes practical robotics integration work beyond the model itself: Linux hardware setup, SO-101 teleoperation, camera capture, dataset recording, local GPU training, policy evaluation, servo-bus reliability fixes, OpenCV/V4L2 camera patches, and mechanical counterbalancing to make low-cost hardware usable for repeatable data collection.
 
+(below is the rest of the README for the Lerobot repo)
+
 <p align="center">
   <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
 </p>
