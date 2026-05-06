@@ -33,6 +33,8 @@ from .config_so_follower import SOFollowerRobotConfig
 
 logger = logging.getLogger(__name__)
 
+PRESENT_POSITION_READ_RETRIES = 2
+
 
 class SOFollower(Robot):
     """
@@ -178,7 +180,8 @@ class SOFollower(Robot):
     def get_observation(self) -> RobotObservation:
         # Read arm position
         start = time.perf_counter()
-        obs_dict = self.bus.sync_read("Present_Position")
+        # Tolerate intermittent low-cost servo bus/status packet failures.
+        obs_dict = self.bus.sync_read("Present_Position", num_retry=PRESENT_POSITION_READ_RETRIES)
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
