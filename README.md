@@ -11,6 +11,13 @@ The current MVP trains an ACT imitation-learning policy to control an SO-101 rob
 
 This project includes practical robotics integration work beyond the model itself: Linux hardware setup, SO-101 teleoperation, camera capture, dataset recording, local GPU training, policy evaluation, servo-bus reliability fixes, OpenCV/V4L2 camera patches, and mechanical counterbalancing to make low-cost hardware usable for repeatable data collection.
 
+**Follow [@KuphDev on X](https://x.com/KuphDev) or connect with [Morgan Kuphal on LinkedIn](https://www.linkedin.com/in/morgan-kuphal/) where I am livestreaming and posting updates about this project!**
+- Initial setup & intro: https://x.com/KuphDev/status/2041976732073222229
+- Unboxing & setup livestream: https://x.com/i/broadcasts/1dxYljkVwPlJX
+- 1st completed demo: https://www.linkedin.com/posts/morgan-kuphal_went-from-a-box-in-the-mail-to-putting-a-activity-7448455642350006272-AFIk
+- Minor delay with thoughts on domestic supply chain issues: https://x.com/KuphDev/status/2044142746030485725
+- Next successful livestream with AI data collection: https://www.linkedin.com/posts/morgan-kuphal_another-successful-robotics-stream-activity-7456703091372113920-3htc
+
 (below is the rest of the README for the Lerobot repo)
 
 <p align="center">
