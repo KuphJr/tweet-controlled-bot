@@ -155,7 +155,7 @@ class OpenCVCamera(Camera):
         # blocking in multi-threaded applications, especially during data collection.
         cv2.setNumThreads(1)
 
-        self.videocapture = cv2.VideoCapture(self.index_or_path, self.backend)
+        self.videocapture = self._create_videocapture()
 
         if not self.videocapture.isOpened():
             self.videocapture.release()
@@ -177,6 +177,32 @@ class OpenCVCamera(Camera):
                     raise ConnectionError(f"{self} failed to capture frames during warmup.")
 
         logger.info(f"{self} connected.")
+
+    def _create_videocapture(self) -> cv2.VideoCapture:
+        """Create a VideoCapture, preferring V4L2 on Linux device cameras."""
+        backend_preferences: list[int] = [int(self.backend)]
+        if (
+            platform.system() == "Linux"
+            and int(self.backend) == cv2.CAP_ANY
+            and (isinstance(self.index_or_path, int) or str(self.index_or_path).startswith("/dev/video"))
+        ):
+            # CAP_ANY may pick a backend that ignores webcam controls. Prefer V4L2 for /dev/video*.
+            backend_preferences = [cv2.CAP_V4L2, cv2.CAP_ANY]
+
+        capture: cv2.VideoCapture | None = None
+        for backend in backend_preferences:
+            capture = cv2.VideoCapture(self.index_or_path, backend)
+            if capture.isOpened():
+                if backend != int(self.backend):
+                    logger.info(
+                        f"{self} requested backend={int(self.backend)}; opened with preferred backend={backend}."
+                    )
+                return capture
+            capture.release()
+
+        if capture is None:
+            capture = cv2.VideoCapture()
+        return capture
 
     @check_if_not_connected
     def _configure_capture_settings(self) -> None:
