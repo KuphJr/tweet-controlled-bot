@@ -3,6 +3,7 @@
 It adapts the LeRobot SO-101 leader/follower arm workflow into an end-to-end robotics demo where a physical robot arm learns simple manipulation tasks from teleoperated demonstrations and can eventually be triggered by social media commands.
 
 The long-term goal is an interactive livestream system on X where users can tweet commands such as “put the yellow duck on the target.” The system will:
+
 1. Use a multimodal AI model to validate the current workspace state with computer vision.
 2. Use an LLM to parse tweets and map requests to the corresponding robot skill.
 3. Execute the selected action autonomously on the physical arm using a custom-trained ACT policy.
@@ -12,6 +13,7 @@ The current MVP trains an ACT imitation-learning policy to control an SO-101 rob
 This project includes practical robotics integration work beyond the model itself: Linux hardware setup, SO-101 teleoperation, camera capture, dataset recording, local GPU training, policy evaluation, servo-bus reliability fixes, OpenCV/V4L2 camera patches, and mechanical counterbalancing to make low-cost hardware usable for repeatable data collection.
 
 **Follow [@KuphDev on X](https://x.com/KuphDev) or connect with [Morgan Kuphal on LinkedIn](https://www.linkedin.com/in/morgan-kuphal/) where I am livestreaming and posting updates about this project!**
+
 - Initial setup & intro: https://x.com/KuphDev/status/2041976732073222229
 - Unboxing & setup livestream: https://x.com/i/broadcasts/1dxYljkVwPlJX
 - 1st completed demo: https://www.linkedin.com/posts/morgan-kuphal_went-from-a-box-in-the-mail-to-putting-a-activity-7448455642350006272-AFIk
