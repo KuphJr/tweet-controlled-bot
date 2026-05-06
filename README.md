@@ -17,6 +17,7 @@ This project includes practical robotics integration work beyond the model itsel
 - 1st completed demo: https://www.linkedin.com/posts/morgan-kuphal_went-from-a-box-in-the-mail-to-putting-a-activity-7448455642350006272-AFIk
 - Minor delay with thoughts on domestic supply chain issues: https://x.com/KuphDev/status/2044142746030485725
 - Next successful livestream with AI data collection: https://www.linkedin.com/posts/morgan-kuphal_another-successful-robotics-stream-activity-7456703091372113920-3htc
+- Local AI model training: https://x.com/KuphDev/status/2051039642045063511
 
 (below is the rest of the README for the Lerobot repo)
 
