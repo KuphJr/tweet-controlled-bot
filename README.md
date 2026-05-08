@@ -17,7 +17,7 @@ This project includes practical robotics integration work beyond the model itsel
 - Initial setup & intro: https://x.com/KuphDev/status/2041976732073222229
 - Unboxing & setup livestream: https://x.com/i/broadcasts/1dxYljkVwPlJX
 - 1st completed demo: https://www.linkedin.com/posts/morgan-kuphal_went-from-a-box-in-the-mail-to-putting-a-activity-7448455642350006272-AFIk
-- Minor delay with thoughts on domestic supply chain issues: https://x.com/KuphDev/status/2044142746030485725
+- Minor delay with thoughts on domestic supply chain issues: https://www.linkedin.com/posts/morgan-kuphal_im-starting-to-learn-first-hand-why-domestic-activity-7449909925746475008-hJG5
 - Next successful livestream with AI data collection: https://www.linkedin.com/posts/morgan-kuphal_another-successful-robotics-stream-activity-7456703091372113920-3htc
 - Local AI model training: https://x.com/KuphDev/status/2051039642045063511
 
