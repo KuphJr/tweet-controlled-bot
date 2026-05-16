@@ -1,3 +1,27 @@
+**This project is a fork of LeRobot for building a tweet-controlled robot.**
+
+It adapts the LeRobot SO-101 leader/follower arm workflow into an end-to-end robotics demo where a physical robot arm learns simple manipulation tasks from teleoperated demonstrations and can eventually be triggered by social media commands.
+
+The long-term goal is an interactive livestream system on X where users can tweet commands such as “put the yellow duck on the target.” The system will:
+
+1. Use a multimodal AI model to validate the current workspace state with computer vision.
+2. Use an LLM to parse tweets and map requests to the corresponding robot skill.
+3. Execute the selected action autonomously on the physical arm using a custom-trained ACT policy.
+
+The current MVP trains an ACT imitation-learning policy to control an SO-101 robot arm using a top-down camera, local demonstration datasets, and real-world robot execution. The robot is being trained to pick up rubber ducks and place/remove them from a target in a constrained workspace.
+
+This project includes practical robotics integration work beyond the model itself: Linux hardware setup, SO-101 teleoperation, camera capture, dataset recording, local GPU training, policy evaluation, servo-bus reliability fixes, OpenCV/V4L2 camera patches, and mechanical counterbalancing to make low-cost hardware usable for repeatable data collection.
+
+**Follow [@KuphDev on X](https://x.com/KuphDev) or connect with [Morgan Kuphal on LinkedIn](https://www.linkedin.com/in/morgan-kuphal/) where I am livestreaming and posting updates about this project!**
+
+- Initial setup & intro: https://x.com/KuphDev/status/2041976732073222229
+- Unboxing & setup livestream: https://x.com/i/broadcasts/1dxYljkVwPlJX
+- 1st completed demo: https://www.linkedin.com/posts/morgan-kuphal_went-from-a-box-in-the-mail-to-putting-a-activity-7448455642350006272-AFIk
+- Minor delay with thoughts on domestic supply chain issues: https://www.linkedin.com/posts/morgan-kuphal_im-starting-to-learn-first-hand-why-domestic-activity-7449909925746475008-hJG5
+- Next successful livestream with AI data collection: https://www.linkedin.com/posts/morgan-kuphal_another-successful-robotics-stream-activity-7456703091372113920-3htc
+- Local AI model training: https://x.com/KuphDev/status/2051039642045063511
+- Running local ACT model policy #1: https://x.com/KuphDev/status/2054931823075950915
+
 <p align="center">
   <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
 </p>
