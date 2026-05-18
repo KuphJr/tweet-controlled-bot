@@ -166,6 +166,14 @@ def parse_args() -> argparse.Namespace:
         help="Print the per-episode diagnostic and stop without modifying anything.",
     )
     parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help=(
+            "Skip the stale-leftover cleanup pass. Use only if you are sure the dataset "
+            "does NOT have leftover files from a prior delete_episodes + push_to_hub round trip."
+        ),
+    )
+    parser.add_argument(
         "--validate-n",
         type=int,
         default=5000,
@@ -303,6 +311,150 @@ def _round_frames(seconds: float, fps: int) -> int:
     return int(round(seconds * fps))
 
 
+# --------------------------------------------------------------------------- #
+# Stale-leftover cleanup                                                      #
+# --------------------------------------------------------------------------- #
+#
+# When `lerobot.datasets.dataset_tools.delete_episodes` is run on an existing
+# dataset and the **result** is pushed back to the same Hub repo with
+# `LeRobotDataset.push_to_hub`, the upload is purely additive -- it overwrites
+# files at colliding paths but never deletes orphans. If the post-prune dataset
+# uses a different `(chunk_index, file_index)` layout than the original (which
+# `delete_episodes` is free to do, since it writes from a fresh
+# `LeRobotDatasetMetadata.create(...)`), the Hub repo ends up with a mix of
+# new files at new paths AND stale originals at the old paths.
+#
+# `snapshot_download` then faithfully delivers both, which surfaces during
+# training as duplicate `episode_index` values (the stale meta/episodes parquets
+# use the original episode numbering, the new consolidated metadata uses the
+# renumbered 0..total_episodes-1).
+#
+# This phase trusts `meta/info.json:total_episodes` and finds the single
+# "canonical" metadata parquet whose `episode_index` column is exactly
+# `[0..total_episodes-1]`. Then it derives which `data/` and `videos/` files
+# that canonical metadata actually references, and deletes everything else
+# under those subtrees in the local out_root mirror.
+
+
+def _read_episode_index_sequence(path: Path) -> list[int]:
+    return pq.read_table(path, columns=["episode_index"]).column("episode_index").to_pylist()
+
+
+def _is_canonical_metadata_file(path: Path, total_episodes: int) -> bool:
+    """A file is canonical iff its episode_index column is exactly [0..total-1] (in any order)."""
+    eps = _read_episode_index_sequence(path)
+    return len(eps) == total_episodes and sorted(eps) == list(range(total_episodes))
+
+
+def find_canonical_metadata_file(out_root: Path, total_episodes: int) -> Path:
+    """Return the meta/episodes parquet that exactly matches info.json's total_episodes."""
+    ep_files = sorted((out_root / "meta" / "episodes").glob("*/*.parquet"))
+    if not ep_files:
+        raise FileNotFoundError(f"No meta/episodes/*/*.parquet under {out_root}")
+
+    matches = [p for p in ep_files if _is_canonical_metadata_file(p, total_episodes)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"More than one canonical metadata file found with rows=={total_episodes} and ep_idx==[0..N-1]: "
+            f"{[str(p) for p in matches]}. Don't know which one is authoritative."
+        )
+
+    summary = "\n".join(
+        f"    {p.name}: rows={len(_read_episode_index_sequence(p))}" for p in ep_files
+    )
+    raise RuntimeError(
+        f"No meta/episodes file matches info.json:total_episodes={total_episodes}. "
+        f"Cannot determine the canonical metadata.\n  Found:\n{summary}"
+    )
+
+
+def referenced_data_and_video_files(
+    canonical_meta_path: Path, video_keys: list[str]
+) -> tuple[set[tuple[int, int]], dict[str, set[tuple[int, int]]]]:
+    """Return the set of (chunk, file) for data/ and per video_key, as referenced by the canonical metadata."""
+    cols = ["data/chunk_index", "data/file_index"] + [
+        f"videos/{k}/{x}" for k in video_keys for x in ("chunk_index", "file_index")
+    ]
+    table = pq.read_table(canonical_meta_path, columns=cols)
+
+    data_chunks = table.column("data/chunk_index").to_pylist()
+    data_files = table.column("data/file_index").to_pylist()
+    data_refs = {(int(c), int(f)) for c, f in zip(data_chunks, data_files, strict=True)}
+
+    video_refs: dict[str, set[tuple[int, int]]] = {}
+    for key in video_keys:
+        chunks = table.column(f"videos/{key}/chunk_index").to_pylist()
+        files = table.column(f"videos/{key}/file_index").to_pylist()
+        video_refs[key] = {(int(c), int(f)) for c, f in zip(chunks, files, strict=True)}
+
+    return data_refs, video_refs
+
+
+def _parse_chunk_file_from_path(path: Path) -> tuple[int, int] | None:
+    """Parse a path like '.../chunk-000/file-012.<ext>' into (0, 12). Returns None on mismatch."""
+    parent = path.parent.name
+    name = path.stem
+    if not parent.startswith("chunk-") or not name.startswith("file-"):
+        return None
+    try:
+        return int(parent.removeprefix("chunk-")), int(name.removeprefix("file-"))
+    except ValueError:
+        return None
+
+
+def cleanup_stale_files(
+    out_root: Path,
+    canonical_meta_path: Path,
+    data_refs: set[tuple[int, int]],
+    video_refs: dict[str, set[tuple[int, int]]],
+) -> dict:
+    """Delete stale leftover files from a prior `delete_episodes` + `push_to_hub` mistake.
+
+    Operates only inside `out_root` -- the source snapshot is never touched.
+    Returns a small report dict.
+    """
+    report = {
+        "deleted_meta": [],  # type: ignore[var-annotated]
+        "deleted_data": [],
+        "deleted_videos": defaultdict(list),
+    }
+
+    # ── meta/episodes ─────────────────────────────────────────────────
+    for p in sorted((out_root / "meta" / "episodes").glob("*/*.parquet")):
+        if p.resolve() == canonical_meta_path.resolve():
+            continue
+        if p.is_symlink() or p.is_file():
+            p.unlink()
+            report["deleted_meta"].append(str(p.relative_to(out_root)))
+
+    # ── data ──────────────────────────────────────────────────────────
+    for p in sorted((out_root / "data").glob("*/*.parquet")):
+        key = _parse_chunk_file_from_path(p)
+        if key is None:
+            continue
+        if key in data_refs:
+            continue
+        if p.is_symlink() or p.is_file():
+            p.unlink()
+            report["deleted_data"].append(str(p.relative_to(out_root)))
+
+    # ── videos/<key> ──────────────────────────────────────────────────
+    videos_root = out_root / "videos"
+    if videos_root.is_dir():
+        for key, refs in video_refs.items():
+            for p in sorted((videos_root / key).glob("*/*.mp4")):
+                k = _parse_chunk_file_from_path(p)
+                if k is None or k in refs:
+                    continue
+                if p.is_symlink() or p.is_file():
+                    p.unlink()
+                    report["deleted_videos"][key].append(str(p.relative_to(out_root)))
+
+    return report
+
+
 def load_episode_metadata(out_root: Path) -> list[dict]:
     """Load all meta/episodes/*.parquet files into a list of row dicts.
 
@@ -331,6 +483,24 @@ def build_plans(
     fps: int,
 ) -> list[EpisodePlan]:
     """Build one EpisodePlan per episode using ``(to - from) * fps`` as ground truth."""
+    # Guard: episode_index must be globally unique. If it isn't, the dataset has
+    # leftover stale metadata from a prior prune + push (or some other merge that
+    # didn't renumber); the cleanup phase should have already removed those.
+    seen: dict[int, int] = {}
+    for row in episode_rows:
+        ep = int(row["episode_index"])
+        seen[ep] = seen.get(ep, 0) + 1
+    dups = sorted(ep for ep, c in seen.items() if c > 1)
+    if dups:
+        sample = ", ".join(str(e) for e in dups[:20])
+        raise RuntimeError(
+            f"Metadata contains {len(dups)} duplicate episode_index value(s): {sample}"
+            f"{' ...' if len(dups) > 20 else ''}. "
+            "This usually means the dataset has stale leftover files from a previous "
+            "`delete_episodes` + `push_to_hub` round trip; cleanup should have removed "
+            "them. Re-run the script and check the cleanup phase logs."
+        )
+
     plans: list[EpisodePlan] = []
     cumulative = 0
 
