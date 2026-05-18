@@ -1,8 +1,11 @@
 #!/usr/bin/env python
-"""Repair a LeRobotDataset v3.0 where the streaming encoder dropped frames.
+"""Repair a LeRobotDataset v3.0 dataset.
 
-Background
-----------
+Handles two independent failure modes that both surface during training as
+"can't find frame N in MP4 with M < N frames":
+
+A) Streaming encoder dropped frames during recording
+---------------------------------------------------
 ``lerobot-record --dataset.streaming_encoding=true`` runs the video encoder
 in a background thread with a bounded queue (default ``encoder_queue_maxsize=30``).
 When the recording loop briefly bursts faster than the encoder can drain the
@@ -10,6 +13,20 @@ queue, ``put(image, timeout=0.1)`` raises ``queue.Full`` and the frame is
 **silently dropped from the MP4** while the parquet row is still added (see
 ``src/lerobot/datasets/video_utils.py::StreamingVideoEncoder.feed_frame`` and the
 "Encoder queue full ... dropped N frame(s)" warning).
+
+B) Stale leftover files from a prior ``delete_episodes`` + ``push_to_hub``
+---------------------------------------------------------------------------
+``delete_episodes`` writes a brand-new dataset (renumbered ``episode_index``,
+possibly different ``(chunk_index, file_index)`` file layout) into a separate
+local directory. When that pruned dataset is then pushed back to the **same**
+Hub repo, ``LeRobotDataset.push_to_hub`` calls ``hub_api.upload_folder(...)``
+which is purely additive: files with colliding paths get overwritten, but
+orphan files at the old layout stay on the Hub. ``snapshot_download`` then
+faithfully delivers both, and the loaded ``meta/episodes`` ends up with
+duplicate ``episode_index`` values from the original (pre-prune) numbering
+mixed in with the new canonical numbering. The reader's
+``self._meta.episodes[ep_idx]`` (position-based) then returns the wrong
+episode's video offsets for half the rows -> spurious IndexError.
 
 This shows up at training time as one of two flavors of the same disease --
 the parquet asks for a frame that doesn't exist in the MP4:
@@ -38,24 +55,38 @@ no matching MP4 frame.
 
 What this script does
 ---------------------
-For each affected episode it **truncates the trailing rows** of the parquet
-so the row count matches the encoded MP4 slice, then re-derives every
-downstream field so the dataset is internally consistent again:
+Three phases, all writing only into a fresh ``--out-root`` (the source root /
+Hub snapshot is never modified):
 
-1.  Drop the last ``deficit`` rows of each affected episode in the data parquet.
-2.  Rewrite the per-row ``timestamp`` column to a clean ``frame_index / fps``
-    grid (already correct, but written out for safety).
-3.  Renumber the global ``index`` column across **all** data parquet files.
-4.  Update ``length``, ``dataset_from_index``, ``dataset_to_index`` and
-    ``videos/<key>/from_timestamp`` / ``to_timestamp`` in
-    ``meta/episodes/*.parquet``. Recomputing from/to in seconds from the
-    truncated lengths is safer than trusting the original (slightly
-    rounded) PyAV-reported durations because it keeps the per-episode
-    slice boundaries aligned with the new parquet timeline.
-5.  Update ``meta/info.json:total_frames``.
-6.  **Never** touches MP4 files. The dataset reader continues to pull
-    from them at the same byte offsets as before; we just stop asking
-    for frames past the end of each slice.
+**Phase 1 - Stale-leftover cleanup (only if needed).** Detects case (B) by
+comparing ``info.json:total_episodes`` to the sum of row counts across all
+``meta/episodes/*/*.parquet`` files. If they don't match, it picks the one
+metadata parquet whose ``episode_index`` is exactly ``[0..total-1]`` as the
+canonical one, derives the set of ``(chunk, file)`` pairs that the canonical
+metadata actually references for ``data/`` and ``videos/<key>/``, and
+deletes every orphan parquet/MP4 from the ``--out-root`` mirror.
+
+**Phase 2 - Streaming-drop truncation.** For each episode, computes
+``actual = round((to_timestamp - from_timestamp) * fps)`` (the writer records
+each episode's true encoded MP4 duration via ``get_video_duration_in_s`` on
+the per-episode temp MP4). For any episode where ``actual < length``:
+
+1.  Drops the last ``deficit`` rows of that episode from the data parquet.
+2.  Rewrites the per-row ``timestamp`` to a clean ``frame_index / fps`` grid.
+3.  Renumbers the global ``index`` column across **all** data parquet files.
+4.  Updates ``length``, ``dataset_from_index``, ``dataset_to_index`` and
+    ``videos/<key>/from_timestamp`` / ``to_timestamp`` in every
+    ``meta/episodes/*.parquet``, recomputing from/to in seconds from the
+    truncated lengths so the per-episode MP4 slice boundaries stay aligned
+    with the new parquet timeline.
+5.  Updates ``meta/info.json:total_frames``.
+6.  **Never** touches MP4 files. The dataset reader continues to pull from
+    them at the same byte offsets as before; we just stop asking for frames
+    past the end of each slice.
+
+**Phase 3 - Validation.** Instantiates ``LeRobotDataset`` from ``--out-root``
+and iterates the first ``--validate-n`` items to confirm decoding works
+end-to-end without ``IndexError`` / ``FrameTimestampError``.
 
 Trade-off
 ---------
@@ -652,15 +683,26 @@ def repair_data_parquets(out_root: Path, plans: list[EpisodePlan], fps: int) -> 
         frame_indices = table.column("frame_index").to_numpy(zero_copy_only=False)
 
         # Build the keep-mask: frame_index < new_length[episode_index]
+        # An unknown episode_index here means the data parquet contains rows for an episode
+        # that is NOT in the canonical metadata. After the stale-cleanup phase this should
+        # be impossible; if it ever happens, it's a real data-integrity problem worth surfacing.
         keep_mask = []
+        orphan_eps: set[int] = set()
         for ep, fi in zip(episode_indices, frame_indices, strict=True):
             ep_i = int(ep)
             fi_i = int(fi)
             if ep_i not in plan_by_ep:
-                # Episode not in metadata? Keep the row to avoid losing data accidentally.
-                keep_mask.append(True)
+                orphan_eps.add(ep_i)
+                keep_mask.append(False)
                 continue
             keep_mask.append(fi_i < plan_by_ep[ep_i].new_length)
+
+        if orphan_eps:
+            raise RuntimeError(
+                f"{data_path} contains rows for episode_index value(s) not present in the canonical "
+                f"meta/episodes: {sorted(orphan_eps)}. The stale-cleanup pass should have removed this "
+                f"file. Re-run from a fresh out_root with --overwrite-out, or report the bug."
+            )
 
         kept_table = table.filter(pa.array(keep_mask, type=pa.bool_()))
 
@@ -845,6 +887,31 @@ def _load_info(root: Path) -> dict:
         return json.load(f)
 
 
+def _detect_stale_metadata(src_root: Path, total_episodes: int) -> tuple[Path | None, int, list[Path]]:
+    """Read-only scan of src_root's meta/episodes. Returns (canonical_path, total_rows, all_paths).
+
+    canonical_path is None when nothing matches info.json:total_episodes. Stale leftovers
+    are diagnosed by ``total_rows > total_episodes``.
+    """
+    ep_files = sorted((src_root / "meta" / "episodes").glob("*/*.parquet"))
+    if not ep_files:
+        raise FileNotFoundError(f"No meta/episodes/*/*.parquet under {src_root}")
+
+    total_rows = 0
+    canonical: Path | None = None
+    for p in ep_files:
+        eps = _read_episode_index_sequence(p)
+        total_rows += len(eps)
+        if (
+            canonical is None
+            and len(eps) == total_episodes
+            and sorted(eps) == list(range(total_episodes))
+        ):
+            canonical = p
+
+    return canonical, total_rows, ep_files
+
+
 def main() -> int:
     args = parse_args()
     setup_logging(args.quiet)
@@ -854,6 +921,7 @@ def main() -> int:
     src_root = materialize_source(args.repo_id, args.src_root, args.revision)
     info = _load_info(src_root)
     fps = args.fps if args.fps is not None else int(info["fps"])
+    total_episodes = int(info["total_episodes"])
 
     declared_video_keys = sorted(
         k for k, ft in info.get("features", {}).items() if ft.get("dtype") == "video"
@@ -867,18 +935,102 @@ def main() -> int:
             f"--video-keys references keys not in dataset: {unknown}. "
             f"Available video keys: {declared_video_keys}"
         )
-    logger.info("Operating on video_keys=%s, fps=%d", video_keys, fps)
+    logger.info(
+        "Operating on video_keys=%s, fps=%d, info.total_episodes=%d, info.total_frames=%d",
+        video_keys,
+        fps,
+        total_episodes,
+        int(info.get("total_frames", -1)),
+    )
 
-    # Diagnostic phase: read metadata directly from the source (no copy needed).
-    episode_rows = load_episode_metadata(src_root)
+    # ── Stale-leftover detection (read-only on src_root) ──────────────
+    canonical_meta, total_meta_rows, all_meta_files = _detect_stale_metadata(src_root, total_episodes)
+    has_stale_leftovers = total_meta_rows != total_episodes
+
+    if has_stale_leftovers:
+        logger.warning(
+            "Stale leftover detected: info.json:total_episodes=%d but meta/episodes contains "
+            "%d rows across %d file(s). The source dataset has orphan files from a previous "
+            "`delete_episodes` + `push_to_hub` round trip.",
+            total_episodes,
+            total_meta_rows,
+            len(all_meta_files),
+        )
+        if canonical_meta is None:
+            raise SystemExit(
+                f"No meta/episodes file has exactly {total_episodes} rows with episode_index=="
+                f"[0..N-1]. Cannot determine canonical metadata. Aborting -- inspect the dataset "
+                f"by hand or re-push the pruned dataset to a fresh repo_id."
+            )
+        logger.warning(
+            "Canonical metadata file is %s. The cleanup phase will delete the other "
+            "%d meta/episodes file(s) plus orphan data/ and videos/ files in --out-root.",
+            canonical_meta.relative_to(src_root),
+            len(all_meta_files) - 1,
+        )
+
+    # ── Diagnostic (uses canonical metadata when present) ─────────────
+    if has_stale_leftovers:
+        # Load only the canonical metadata so the diagnostic represents the post-cleanup state.
+        table = pq.read_table(canonical_meta)
+        episode_rows = [
+            {name: table.column(name)[i].as_py() for name in table.schema.names}
+            for i in range(table.num_rows)
+        ]
+        episode_rows.sort(key=lambda r: r["episode_index"])
+    else:
+        episode_rows = load_episode_metadata(src_root)
+
     plans = build_plans(episode_rows, video_keys, fps)
     print_diagnostic(plans, video_keys, fps)
 
     if args.dry_run:
+        if has_stale_leftovers:
+            logger.info(
+                "Dry run: would also delete %d stale meta/episodes file(s) and any orphan "
+                "data/videos files in --out-root if you re-run without --dry-run.",
+                len(all_meta_files) - 1,
+            )
         logger.info("Dry run requested -- not modifying anything. Exiting.")
         return 0
 
     populate_out_root(src_root, out_root, link_videos=args.link_videos, overwrite=args.overwrite_out)
+
+    # ── Stale-leftover cleanup (writes only inside out_root) ──────────
+    if has_stale_leftovers and not args.no_cleanup:
+        out_canonical = out_root / canonical_meta.relative_to(src_root)
+        data_refs, video_refs = referenced_data_and_video_files(out_canonical, video_keys)
+        if args.link_videos:
+            # Symlinked videos can't be safely modified (would mutate the source snapshot).
+            logger.warning(
+                "--link-videos was used; stale video files under %s will be left in place "
+                "(can't delete through the symlink without touching the source snapshot). "
+                "Re-run without --link-videos if you need a fully clean local copy.",
+                src_root / "videos",
+            )
+            video_refs_for_cleanup: dict[str, set[tuple[int, int]]] = {}
+        else:
+            video_refs_for_cleanup = video_refs
+        logger.info("Cleaning up stale leftover files in %s ...", out_root)
+        report = cleanup_stale_files(out_root, out_canonical, data_refs, video_refs_for_cleanup)
+        logger.info(
+            "Cleanup: deleted %d meta file(s), %d data file(s), %d video file(s)",
+            len(report["deleted_meta"]),
+            len(report["deleted_data"]),
+            sum(len(v) for v in report["deleted_videos"].values()),
+        )
+        for rel in report["deleted_meta"]:
+            logger.info("  deleted meta: %s", rel)
+        for rel in report["deleted_data"]:
+            logger.info("  deleted data: %s", rel)
+        for key, rels in report["deleted_videos"].items():
+            for rel in rels:
+                logger.info("  deleted video[%s]: %s", key, rel)
+    elif has_stale_leftovers and args.no_cleanup:
+        logger.warning(
+            "--no-cleanup set; skipping stale-leftover cleanup. The dataset will likely fail "
+            "validation because duplicate episode_index values will trip the uniqueness guard."
+        )
 
     logger.info("Truncating data parquet files ...")
     new_total = repair_data_parquets(out_root, plans, fps)
