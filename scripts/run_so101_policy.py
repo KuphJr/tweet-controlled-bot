@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 from lerobot.cameras.opencv import OpenCVCameraConfig
 from lerobot.configs import PreTrainedConfig
@@ -35,15 +36,17 @@ from lerobot.rollout import (
     build_rollout_context,
 )
 from lerobot.rollout.inference import SyncInferenceConfig
+from lerobot.rollout.strategies.core import send_next_action
 from lerobot.utils.process import ProcessSignalHandler
+from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging
 
 # --------------------------------------------------------------------------- #
 # Configuration                                                               #
 # --------------------------------------------------------------------------- #
 
-POLICY_PATH = "outputs/train/act_duck_put_brown/checkpoints/last/pretrained_model"
-TASK = "Put the brown duck on the target"
+POLICY_PATH = "outputs/train/place_orange_duck/checkpoints/last/pretrained_model"
+TASK = "Place orange duck on target"
 
 ROBOT_PORT = "/dev/ttyACM0"
 ROBOT_ID = "so101_follower"
@@ -56,11 +59,105 @@ CAMERA_FPS = 30
 CAMERA_FOURCC = "MJPG"
 
 FPS = 30
-DURATION_S = 60.0
+DURATION_S = 30.0
 
 DISPLAY_DATA = False
 
+# Stop early once the policy has moved away from the startup pose and then
+# returned to it. Values are in degrees for the SO-101 default config.
+MIN_RUNTIME_BEFORE_NEUTRAL_STOP_S = 10.0
+LEAVE_NEUTRAL_TOLERANCE_DEG = 10.0
+RETURN_NEUTRAL_TOLERANCE_DEG = 10.0
+NEUTRAL_HOLD_S = 0.2
+
 logger = logging.getLogger("run_so101_policy")
+
+
+# --------------------------------------------------------------------------- #
+# Neutral stop strategy                                                       #
+# --------------------------------------------------------------------------- #
+
+
+class StopAtNeutralStrategy(BaseStrategy):
+    """Base rollout that stops after returning to the startup joint pose."""
+
+    def run(self, ctx) -> None:
+        engine = self._engine
+        cfg = ctx.runtime.cfg
+        robot = ctx.hardware.robot_wrapper
+        interpolator = self._interpolator
+
+        neutral_pose = ctx.hardware.initial_position
+        if not neutral_pose:
+            logger.warning("No initial joint pose captured; falling back to duration-only rollout.")
+
+        control_interval = interpolator.get_control_interval(cfg.fps)
+        start_time = time.perf_counter()
+        neutral_since: float | None = None
+        left_neutral = False
+
+        engine.resume()
+        logger.info(
+            "Neutral-stop rollout started (leave>%.1f deg, return<%.1f deg for %.1fs)",
+            LEAVE_NEUTRAL_TOLERANCE_DEG,
+            RETURN_NEUTRAL_TOLERANCE_DEG,
+            NEUTRAL_HOLD_S,
+        )
+
+        while not ctx.runtime.shutdown_event.is_set():
+            loop_start = time.perf_counter()
+            elapsed_s = loop_start - start_time
+
+            if cfg.duration > 0 and elapsed_s >= cfg.duration:
+                logger.info("Duration limit reached (%.0fs)", cfg.duration)
+                break
+
+            obs = robot.get_observation()
+            obs_processed = self._process_observation_and_notify(ctx.processors, obs)
+
+            if neutral_pose:
+                neutral_error = _max_neutral_error(obs, neutral_pose)
+                if not left_neutral and neutral_error > LEAVE_NEUTRAL_TOLERANCE_DEG:
+                    left_neutral = True
+                    logger.info("Robot left neutral pose (max joint error %.1f deg)", neutral_error)
+
+                can_stop = left_neutral and elapsed_s >= MIN_RUNTIME_BEFORE_NEUTRAL_STOP_S
+                if can_stop and neutral_error < RETURN_NEUTRAL_TOLERANCE_DEG:
+                    neutral_since = neutral_since or loop_start
+                    if loop_start - neutral_since >= NEUTRAL_HOLD_S:
+                        logger.info(
+                            "Robot returned to neutral pose for %.1fs (max joint error %.1f deg); stopping.",
+                            NEUTRAL_HOLD_S,
+                            neutral_error,
+                        )
+                        break
+                else:
+                    neutral_since = None
+
+            if self._handle_warmup(cfg.use_torch_compile, loop_start, control_interval):
+                continue
+
+            action_dict = send_next_action(obs_processed, obs, ctx, interpolator)
+            self._log_telemetry(obs_processed, action_dict, ctx.runtime)
+
+            dt = time.perf_counter() - loop_start
+            if (sleep_t := control_interval - dt) > 0:
+                precise_sleep(sleep_t)
+            else:
+                logger.warning(
+                    "Rollout loop is running slower (%.1f Hz) than the target FPS (%s Hz).",
+                    1 / dt,
+                    cfg.fps,
+                )
+
+
+def _max_neutral_error(obs: dict, neutral_pose: dict) -> float:
+    errors = [
+        abs(float(obs[key]) - float(neutral_value))
+        for key, neutral_value in neutral_pose.items()
+        if key in obs
+    ]
+    return max(errors, default=0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -140,7 +237,7 @@ def main() -> int:
         ctx.data.ordered_action_keys,
     )
 
-    strategy = BaseStrategy(cfg.strategy)
+    strategy = StopAtNeutralStrategy(cfg.strategy)
     try:
         strategy.setup(ctx)
         logger.info("Starting %.1fs rollout at %d Hz...", DURATION_S, FPS)

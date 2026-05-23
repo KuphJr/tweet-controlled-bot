@@ -16,6 +16,7 @@
 Provides the OpenCVCamera class for capturing frames from cameras using OpenCV.
 """
 
+import json
 import logging
 import math
 import os
@@ -47,6 +48,60 @@ from .configuration_opencv import ColorMode, OpenCVCameraConfig
 MAX_OPENCV_INDEX = 60
 
 logger = logging.getLogger(__name__)
+
+# Optional deterministic crop, shared across data collection and policy inference.
+# See ``scripts/preview_camera_crop.py`` for an interactive authoring tool.
+CAMERA_CROP_CONFIG_PATH = Path("/home/kuphdev/lerobot/camera_crop.json")
+
+
+def _load_camera_crop() -> tuple[int, int, int, int] | None:
+    """Load ``(x, y, w, h)`` from :data:`CAMERA_CROP_CONFIG_PATH` if enabled.
+
+    Behaviour (logs exactly one info-level line per call):
+
+    * file missing -> ``None``
+    * malformed JSON / missing keys -> ``None``
+    * ``enabled=false`` -> ``None``
+    * ``enabled=true`` -> tuple of ints in raw sensor pixel coordinates
+
+    The camera consumer is expected to clamp the rectangle to the actual frame
+    size and resize the cropped region back to its configured capture size.
+    """
+    path = CAMERA_CROP_CONFIG_PATH
+    if not path.exists():
+        logger.info("camera_crop.json not found at %s; no crop applied.", path)
+        return None
+    try:
+        data = json.loads(path.read_text())
+        enabled = bool(data["enabled"])
+        x = int(data["x"])
+        y = int(data["y"])
+        w = int(data["w"])
+        h = int(data["h"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as err:
+        logger.info("camera_crop.json at %s is malformed (%s); no crop applied.", path, err)
+        return None
+
+    if not enabled:
+        logger.info("camera_crop.json at %s has enabled=false; no crop applied.", path)
+        return None
+
+    if w <= 0 or h <= 0:
+        logger.info(
+            "camera_crop.json at %s has non-positive size (w=%d, h=%d); no crop applied.", path, w, h
+        )
+        return None
+
+    logger.info(
+        "camera_crop.json loaded from %s: x=%d y=%d w=%d h=%d "
+        "(crop will be resized back to camera capture size).",
+        path,
+        x,
+        y,
+        w,
+        h,
+    )
+    return x, y, w, h
 
 
 class OpenCVCamera(Camera):
@@ -124,6 +179,8 @@ class OpenCVCamera(Camera):
             self.capture_width, self.capture_height = self.width, self.height
             if self.rotation in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
                 self.capture_width, self.capture_height = self.height, self.width
+
+        self._crop: tuple[int, int, int, int] | None = _load_camera_crop()
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}({self.index_or_path})"
@@ -370,6 +427,21 @@ class OpenCVCamera(Camera):
 
         if not ret:
             raise RuntimeError(f"{self} read failed (status={ret}).")
+
+        if self._crop is not None and self.capture_width and self.capture_height:
+            frame_h, frame_w = frame.shape[:2]
+            x, y, w, h = self._crop
+            x = max(0, min(int(x), frame_w - 1))
+            y = max(0, min(int(y), frame_h - 1))
+            w = max(1, min(int(w), frame_w - x))
+            h = max(1, min(int(h), frame_h - y))
+            frame = frame[y : y + h, x : x + w]
+            if (w, h) != (int(self.capture_width), int(self.capture_height)):
+                frame = cv2.resize(
+                    frame,
+                    (int(self.capture_width), int(self.capture_height)),
+                    interpolation=cv2.INTER_LINEAR,
+                )
 
         return frame
 
