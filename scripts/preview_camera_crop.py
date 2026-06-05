@@ -32,7 +32,30 @@ import sys
 import tempfile
 from pathlib import Path
 
+
 import cv2
+
+
+def _configure_opencv_qt_fonts() -> None:
+    """Point Qt at system TrueType fonts when the OpenCV wheel lacks cv2/qt/fonts (4.13+)."""
+    current = os.environ.get("QT_QPA_FONTDIR", "")
+    if current and os.path.isdir(current):
+        if any(name.endswith((".ttf", ".otf")) for name in os.listdir(current)):
+            return
+
+    for path in (
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/dejavu",
+        "/usr/share/fonts/TTF",
+        "/System/Library/Fonts/Supplemental",
+        "/Library/Fonts",
+    ):
+        if os.path.isdir(path) and any(name.endswith((".ttf", ".otf")) for name in os.listdir(path)):
+            os.environ["QT_QPA_FONTDIR"] = path
+            return
+
+
+_configure_opencv_qt_fonts()
 
 CAPTURE_WIDTH = 1280
 CAPTURE_HEIGHT = 720
@@ -173,8 +196,9 @@ def draw_hud(
     ]
     for i, line in enumerate(lines):
         org = (10, 24 + i * 22)
-        cv2.putText(full_frame, line, org, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(full_frame, line, org, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        # Hershey vector fonts (LINE_8) avoid Qt's missing cv2/qt/fonts directory on OpenCV 4.13+.
+        cv2.putText(full_frame, line, org, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_8)
+        cv2.putText(full_frame, line, org, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_8)
 
 
 def main() -> int:
