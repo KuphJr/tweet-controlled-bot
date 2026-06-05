@@ -1,0 +1,13 @@
+# Extra dependencies for the tweet-controlled robot (scripts/tweet_robot).
+# Install into the existing lerobot environment with:
+#   uv pip install -r scripts/tweet_robot/requirements.txt
+#
+# lerobot itself (torch, opencv, the rollout API, etc.) is assumed already
+# installed via `uv sync`. `requests` is already a lerobot dependency but is
+# listed here for completeness.
+
+openai>=1.40.0
+elevenlabs>=1.0.0
+tweepy>=4.14.0
+python-dotenv>=1.0.0
+requests>=2.32.0

@@ -166,6 +166,9 @@ wandb/
 data/
 outputs/
 
+# Tweet-robot runtime state and command logs (scripts/tweet_robot)
+runtime/
+
 # Translations
 *.mo
 *.pot
