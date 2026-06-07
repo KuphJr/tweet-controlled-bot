@@ -179,7 +179,7 @@ class PolicyResult:
 # --------------------------------------------------------------------------- #
 
 _DEFAULT_POLICY_PATHS: dict[tuple[RequestedColor, PolicyAction], str] = {
-    (RequestedColor.ORANGE, PolicyAction.PLACE): "outputs/train/place_orange_duck/checkpoints/last/pretrained_model",
+    (RequestedColor.ORANGE, PolicyAction.PLACE): "outputs/train/place_orange_duck_pruned_2nd/checkpoints/last/pretrained_model",
     (RequestedColor.ORANGE, PolicyAction.REMOVE): "outputs/train/remove_orange_duck/checkpoints/last/pretrained_model",
     (RequestedColor.GREEN, PolicyAction.PLACE): "outputs/train/place_green_duck/checkpoints/last/pretrained_model",
     (RequestedColor.GREEN, PolicyAction.REMOVE): "outputs/train/remove_green_duck/checkpoints/140000/pretrained_model",
@@ -280,7 +280,7 @@ class AppConfig:
 
     # Handles
     admin_handle: str = "KuphDev"
-    bot_handle: str = "KuphDevsRobot"
+    bot_handle: str = "KuphDevs_Robot"
 
     # Rate limits / queue / timeouts
     max_replies_per_hour: int = 60
@@ -336,7 +336,7 @@ class AppConfig:
             elevenlabs_model_id=_env_str("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
             audio_player_cmd=_env_str("AUDIO_PLAYER_CMD", "ffplay -nodisp -autoexit -loglevel quiet"),
             admin_handle=_env_str("ADMIN_HANDLE", "KuphDev"),
-            bot_handle=_env_str("BOT_HANDLE", "KuphDevsRobot"),
+            bot_handle=_env_str("BOT_HANDLE", "KuphDevs_Robot"),
             max_replies_per_hour=_env_int("MAX_REPLIES_PER_HOUR", 60),
             absolute_max_posts_per_hour=_env_int("ABSOLUTE_MAX_POSTS_PER_HOUR", 80),
             max_queue_size=_env_int("MAX_QUEUE_SIZE", 5),

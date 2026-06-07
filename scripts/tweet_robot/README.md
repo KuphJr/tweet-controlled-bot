@@ -75,10 +75,10 @@ Per command:
    | --- | --- |
    | `OPENAI_API_KEY`, `OPENAI_COMMAND_MODEL`, `OPENAI_VISION_MODEL` | platform.openai.com. Defaults: `gpt-5.4-mini` for command parsing + reply text (fast/cheap), `gpt-5.5` for vision (SOTA, for reliable success/error detection). |
    | `TWITTERAPI_IO_API_KEY` | twitterapi.io — **read** side (quotes + replies). |
-   | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com — OAuth 1.0a **user-context** creds for the **bot** account `@KuphDevsRobot` (not the admin `@KuphDev`). No bearer token needed. |
+   | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com — OAuth 1.0a **user-context** creds for the **bot** account `@KuphDevs_Robot` (not the admin `@KuphDev`). No bearer token needed. |
    | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID` | elevenlabs.io — optional TTS. |
    | `AUDIO_PLAYER_CMD` | Ubuntu playback command; the audio file path is appended as the last arg. `ffplay -nodisp -autoexit -loglevel quiet` (default), `paplay`, or `aplay`. ElevenLabs returns MP3 — `ffplay` handles it directly; `aplay`/`paplay` expect WAV. |
-   | `ADMIN_HANDLE`, `BOT_HANDLE` | `KuphDev` / `KuphDevsRobot`. |
+   | `ADMIN_HANDLE`, `BOT_HANDLE` | `KuphDev` / `KuphDevs_Robot`. |
 
    `.env` is git-ignored. Never commit real secrets.
 

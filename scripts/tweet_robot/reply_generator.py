@@ -23,7 +23,7 @@ logger = logging.getLogger("tweet_robot.reply_generator")
 
 # Keep replies comfortably under the 280-char limit, accounting for the implicit
 # @handle prefix X adds on replies.
-_MAX_REPLY_CHARS = 220
+_MAX_REPLY_CHARS = 260
 
 
 class ReplyCategory(str, Enum):
@@ -49,7 +49,7 @@ _INTENT = {
     ),
     ReplyCategory.INVALID: (
         "Politely say you couldn't understand the command and that they should ask "
-        "for one of: orange, green, yellow, or pink."
+        "to place one of the colored rubber ducks: orange, green, yellow, or pink."
     ),
     ReplyCategory.DUPLICATE_AUTHOR: (
         "Kindly tell the user they already have a command in the queue and to wait "
@@ -97,7 +97,7 @@ class ReplyGenerator:
         if category is ReplyCategory.INVALID:
             return (
                 "Sorry, I couldn't figure out the command. "
-                "Please ask for orange, green, yellow, or pink."
+                "Please ask for either the orange, green, yellow, or pink duck to be placed on the target."
             )
         if category is ReplyCategory.DUPLICATE_AUTHOR:
             return (
@@ -147,7 +147,7 @@ class ReplyGenerator:
         if author_name:
             ctx_lines.append(f"Requester name: {author_name}")
         if original_text:
-            ctx_lines.append(f"Their message: {original_text[:200]}")
+            ctx_lines.append(f"Their message: {original_text[:300]}")
         if color is not None:
             ctx_lines.append(f"Requested duck color: {color.value}")
         if position is not None:
@@ -155,10 +155,10 @@ class ReplyGenerator:
 
         system = (
             "You write very short, fun, friendly public replies for a livestreamed "
-            "robot arm that places rubber ducks on a target. One sentence, under "
+            "robot arm that places colored rubber ducks on a target when requested. One sentence, under "
             f"{_MAX_REPLY_CHARS} characters. No hashtags. Do not invent facts or "
             "promise specific timing beyond 'soon'. Do not include @mentions. "
-            "Return only the reply text."
+            "Return only the reply text. Act as if you are the robot itself, speaking to the user."
         )
         resp = self._client.chat.completions.create(
             model=self.cfg.openai_command_model,
@@ -167,7 +167,7 @@ class ReplyGenerator:
                 {"role": "user", "content": "\n".join(ctx_lines)},
             ],
             temperature=0.9,
-            max_tokens=80,
+            max_tokens=200,
         )
         return resp.choices[0].message.content or ""
 

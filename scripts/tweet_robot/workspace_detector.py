@@ -40,21 +40,21 @@ _ALLOWED_COLORS = [c.value for c in RequestedColor]
 # Cap example count and downscale to keep per-call token cost/latency reasonable.
 # Cap is per FOLDER (not per state) so multiple error folders (e.g. "flipped over"
 # and "misplaced") each contribute variety.
-_MAX_EXAMPLES_PER_FOLDER = 2
+_MAX_EXAMPLES_PER_FOLDER = 3
 _EXAMPLE_MAX_WIDTH = 512
 _QUERY_MAX_WIDTH = 768
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 _SYSTEM_PROMPT = (
     "You are a precise visual inspector for a robot arm workspace, viewed from a "
-    "top-down fisheye camera. In the center is a round red-and-white bullseye "
+    "top-down camera. In the center is a round red-and-white bullseye "
     "target. Rubber ducks come in four colors: orange, green, yellow, and pink. "
     "Determine the state of the TARGET (the bullseye):\n"
     "- 'orange_on_target' / 'green_on_target' / 'yellow_on_target' / "
     "'pink_on_target': exactly one duck of that color sits centered on the target.\n"
     "- 'empty': the target/bullseye is clear with no duck on it (ducks elsewhere "
     "in the scene are fine and should be ignored).\n"
-    "- 'error': anything abnormal — a duck is off-center / only partly on the "
+    "- 'error': anything abnormal — a duck is very significantly off-center / only partly on the "
     "target, dropped or misplaced, flipped over, multiple ducks on the target, or "
     "the scene is otherwise unreadable/unknown.\n"
     "Set current_color to the duck color on the target, or null if empty/error. "

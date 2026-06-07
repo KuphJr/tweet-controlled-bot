@@ -45,7 +45,7 @@ from lerobot.utils.utils import init_logging
 # Configuration                                                               #
 # --------------------------------------------------------------------------- #
 
-POLICY_PATH = "outputs/train/place_pink_duck_pruned/checkpoints/last/pretrained_model"
+POLICY_PATH = "outputs/train/place_orange_duck_pruned_2nd/checkpoints/last/pretrained_model"
 TASK = "Place pink duck on target"
 
 ROBOT_PORT = "/dev/ttyACM0"

@@ -23,11 +23,11 @@ _ALLOWED_COLORS = [c.value for c in RequestedColor]
 _SYSTEM_PROMPT = (
     "You parse short social-media messages directing a robot arm to place a "
     "rubber duck of a specific color onto a target. The only valid colors are "
-    "orange, green, yellow, and pink. The user is asking for ONE color to be "
+    "orange, green, yellow, and pink. The user is asking for one color to be "
     "placed on the target. Extract the requested color if the message clearly "
     "asks for one of the four colors; otherwise mark it invalid. Be tolerant of "
     "casual phrasing (e.g. 'green please', 'do orange', 'pink duck on target', "
-    "'move yellow'). If multiple colors or no clear color is requested, or the "
+    "'move yellow'). If no clear color is requested to be placed on the target, or the "
     "message is off-topic/ambiguous, set valid=false and requested_color=null. "
     "Set confidence in [0,1] reflecting how sure you are."
 )
