@@ -177,7 +177,7 @@ class ReplyGenerator:
 
     def error_user_reply(self) -> str:
         """Reply shown to a user who sends a command while the system is broken."""
-        return f"Something is broken. Please tag @{self.cfg.admin_handle}"
+        return f"Something is broken. @{self.cfg.admin_handle} has been notified."
 
     def error_admin_notify(self, detail: str) -> str:
         """Critical error notification tagging the admin."""
