@@ -87,7 +87,7 @@ def _log_banner(cfg: AppConfig, source_tweet_id: str) -> None:
     logger.info("Tweet-controlled SO-101 duck robot")
     logger.info("=" * 72)
     logger.info("Source tweet : %s", source_tweet_id)
-    logger.info("Bot account  : @%s   Admin: @%s", cfg.bot_handle, cfg.admin_handle)
+    logger.info("Posting acct : @%s   Admin: @%s", cfg.bot_handle, cfg.admin_handle)
     logger.info(
         "Modes        : dry_run=%s no_tts=%s no_robot=%s",
         cfg.dry_run,

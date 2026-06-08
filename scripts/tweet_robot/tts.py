@@ -2,10 +2,11 @@
 
 Synthesizes speech via ElevenLabs to a temp file, then plays it with a
 configurable external command (``AUDIO_PLAYER_CMD``, e.g. ``ffplay``/``aplay``/
-``paplay``) so it works on Ubuntu without extra Python audio deps. Synthesis +
-playback run in a worker thread joined with a timeout, so TTS NEVER blocks policy
-execution indefinitely. Any failure (missing key, synth error, missing player,
-timeout) is logged and ignored. ``--no-tts`` disables it entirely.
+``paplay``) so it works on Ubuntu without extra Python audio deps. ``speak()`` is
+fire-and-forget, but a speech lock serializes synthesis/playback so narrations do
+not talk over each other or race temp-file cleanup. Playback is bounded by
+``TTS_TIMEOUT_S``. Any failure (missing key, synth error, missing player, timeout)
+is logged and ignored. ``--no-tts`` disables it entirely.
 """
 
 from __future__ import annotations
@@ -28,8 +29,10 @@ _OUTPUT_FORMAT = "mp3_44100_128"
 class TTS:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
-        self._lock = Lock()
+        self._proc_lock = Lock()
+        self._speech_lock = Lock()
         self._proc: subprocess.Popen | None = None
+        self._stopped = False
         self._client = None
 
         self.enabled = (
@@ -68,25 +71,26 @@ class TTS:
     # ------------------------------------------------------------------ #
 
     def speak(self, text: str, *, timeout_s: float | None = None) -> None:
-        """Synthesize + play ``text``, bounded by ``timeout_s`` (never raises)."""
+        """Queue ``text`` for serialized background synth/playback (never raises)."""
         text = (text or "").strip()
         if not text:
             return
         logger.info("TTS say: %s", text)
         if not self.enabled or self._client is None:
             return
+        if self._stopped:
+            logger.info("TTS stopped; dropping speech request.")
+            return
 
         timeout_s = timeout_s if timeout_s is not None else self.cfg.tts_timeout_s
         spoken = self._pronounce(text)
-        worker = Thread(target=self._synth_and_play, args=(spoken,), daemon=True)
+        worker = Thread(target=self._synth_and_play, args=(spoken, timeout_s), daemon=True)
         worker.start()
-        worker.join(timeout_s)
-        if worker.is_alive():
-            logger.warning("TTS exceeded %.1fs; continuing (audio may finish in background).", timeout_s)
 
     def stop(self) -> None:
         """Terminate any in-progress playback (used on shutdown)."""
-        with self._lock:
+        self._stopped = True
+        with self._proc_lock:
             proc = self._proc
         if proc is not None and proc.poll() is None:
             try:
@@ -98,7 +102,13 @@ class TTS:
     # Worker                                                             #
     # ------------------------------------------------------------------ #
 
-    def _synth_and_play(self, text: str) -> None:
+    def _synth_and_play(self, text: str, timeout_s: float) -> None:
+        with self._speech_lock:
+            if self._stopped:
+                return
+            self._synth_and_play_locked(text, timeout_s)
+
+    def _synth_and_play_locked(self, text: str, timeout_s: float) -> None:
         path: str | None = None
         try:
             audio = b"".join(
@@ -115,7 +125,9 @@ class TTS:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 f.write(audio)
                 path = f.name
-            self._play_file(path)
+            if self._stopped:
+                return
+            self._play_file(path, timeout_s)
         except Exception:  # noqa: BLE001
             logger.exception("TTS synth/playback failed (continuing).")
         finally:
@@ -125,17 +137,25 @@ class TTS:
                 except OSError:
                     pass
 
-    def _play_file(self, path: str) -> None:
+    def _play_file(self, path: str, timeout_s: float) -> None:
         cmd = shlex.split(self.cfg.audio_player_cmd) + [path]
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             logger.warning("Audio player not found: %r. Set AUDIO_PLAYER_CMD.", self.cfg.audio_player_cmd)
             return
-        with self._lock:
+        with self._proc_lock:
             self._proc = proc
         try:
-            proc.wait()
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            logger.warning("Audio playback exceeded %.1fs; terminating player.", timeout_s)
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         finally:
-            with self._lock:
+            with self._proc_lock:
                 self._proc = None

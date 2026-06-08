@@ -9,7 +9,8 @@ Polls two endpoints for the same source tweet and merges them into one stream of
     ``replies`` (we also accept ``tweets`` defensively).
   * Both: ``has_next_page`` / ``next_cursor`` for pagination, header ``X-API-Key``,
     ordered newest-first, ~20/page. Tweet fields: ``id``, ``text``, ``createdAt``
-    ("Tue Dec 10 07:00:30 +0000 2024"), ``author.userName`` / ``author.name``.
+    ("Tue Dec 10 07:00:30 +0000 2024"), ``inReplyToId``, ``author.userName`` /
+    ``author.name``.
 
 We pass ``sinceTime`` server-side to reduce paging, AND always filter client-side
 by ``createdAt`` as a safety net (the docs warn ``has_next_page`` can be
@@ -49,6 +50,7 @@ class RawItem:
     author_name: str
     text: str
     created_at: float  # epoch seconds
+    in_reply_to_tweet_id: str | None = None
 
 
 def _parse_created_at(value: str | None) -> float:
@@ -96,6 +98,15 @@ class TwitterReader:
             items = payload.get("replies")
         return items or []
 
+    @staticmethod
+    def _extract_parent_id(raw: dict) -> str | None:
+        """Return parent tweet ID for replies, handling known provider spellings."""
+        for key in ("inReplyToId", "inReplyToTweetId", "inReplyToStatusId", "in_reply_to_status_id"):
+            value = raw.get(key)
+            if value:
+                return str(value)
+        return None
+
     def _to_item(self, raw: dict, source: CommandSource) -> RawItem | None:
         tweet_id = raw.get("id")
         if not tweet_id:
@@ -108,6 +119,7 @@ class TwitterReader:
             author_name=str(author.get("name", "") or ""),
             text=str(raw.get("text", "") or ""),
             created_at=_parse_created_at(raw.get("createdAt")),
+            in_reply_to_tweet_id=self._extract_parent_id(raw),
         )
 
     # ------------------------------------------------------------------ #
@@ -158,6 +170,15 @@ class TwitterReader:
                 if item.created_at < self.start_time:
                     reached_old_or_seen = True
                     continue
+                if (
+                    source == CommandSource.REPLY
+                    and item.in_reply_to_tweet_id
+                    and item.in_reply_to_tweet_id != self.source_tweet_id
+                ):
+                    # Only direct comments on the source tweet are commands. Nested
+                    # replies include generated acknowledgements/status replies and
+                    # can otherwise create loops in single-account mode.
+                    continue
                 collected.append(item)
 
             if reached_old_or_seen:
@@ -177,7 +198,8 @@ class TwitterReader:
     def fetch_new(self, seen_ids: set[str]) -> list[RawItem]:
         """Return new items from BOTH sources, deduped, oldest-first.
 
-        Excludes already-seen IDs, the bot's own posts, and anything older than
+        Excludes already-seen IDs, the posting account's own posts in
+        separate-account mode, nested replies, and anything older than
         ``start_time``. The caller is responsible for marking returned IDs seen.
         """
         merged: dict[str, RawItem] = {}
@@ -193,8 +215,9 @@ class TwitterReader:
             for item in items:
                 if item.tweet_id in seen_ids or item.tweet_id in merged:
                     continue
-                if normalize_handle(item.author_handle) == self.cfg.bot_handle_norm:
-                    continue  # never process the bot's own posts
+                single_account = self.cfg.bot_handle_norm == self.cfg.admin_handle_norm
+                if normalize_handle(item.author_handle) == self.cfg.bot_handle_norm and not single_account:
+                    continue  # never process the separate posting account's own posts
                 merged[item.tweet_id] = item
 
         return sorted(merged.values(), key=lambda it: it.created_at)

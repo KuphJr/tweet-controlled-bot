@@ -66,6 +66,26 @@ _ADMIN_KEYWORDS = [
 # Sentinel returned by the pipeline when shutdown interrupts a run (not an error).
 _ABORTED = "__aborted__"
 
+_GENERATED_SELF_REPLY_FRAGMENTS = (
+    "queued!",
+    "you're #",
+    "I'll place",
+    "already have a command",
+    "one request at a time",
+    "queue is full",
+    "couldn't figure out",
+    "something is broken",
+    "has been notified",
+    "status:",
+    "paused.",
+    "resumed.",
+    "queue cleared.",
+    "error cleared.",
+    "shutting down safely",
+    "restarting now",
+    "the robot hit an error",
+)
+
 
 class TweetRobotController:
     def __init__(
@@ -197,8 +217,18 @@ class TweetRobotController:
                 return
         author_norm = normalize_handle(item.author_handle)
 
-        # Bot's own posts are already filtered by the reader, but double-check.
-        if author_norm == self.cfg.bot_handle_norm:
+        # In separate-account mode, never ingest the posting account's own replies.
+        # In single-account mode (BOT_HANDLE == ADMIN_HANDLE), @KuphDev must still
+        # be able to issue admin and normal commands, so only generated status/ack
+        # text is ignored below.
+        single_account = self.cfg.bot_handle_norm == self.cfg.admin_handle_norm
+        if author_norm == self.cfg.bot_handle_norm and not single_account:
+            with self._lock:
+                self.state_store.mark_seen(item.tweet_id)
+            return
+
+        if single_account and author_norm == self.cfg.admin_handle_norm and self._looks_like_generated_self_reply(item.text):
+            logger.info("Ignoring generated self-authored reply %s.", item.tweet_id)
             with self._lock:
                 self.state_store.mark_seen(item.tweet_id)
             return
@@ -216,6 +246,8 @@ class TweetRobotController:
         self._handle_user_command(item)
 
     def _handle_user_command(self, item: RawItem) -> None:
+        author_norm = normalize_handle(item.author_handle)
+
         # ERROR state: refuse new commands with a clear message.
         with self._lock:
             in_error = self._state == ControllerState.ERROR
@@ -229,6 +261,11 @@ class TweetRobotController:
         parsed = self.parser.parse(item.text)
         if not parsed.valid or parsed.requested_color is None:
             logger.info("Invalid command from @%s: %r (%s)", item.author_handle, item.text, parsed.reason)
+            if author_norm == self.cfg.bot_handle_norm:
+                logger.info("Ignoring invalid self-authored item %s without replying.", item.tweet_id)
+                with self._lock:
+                    self.state_store.mark_seen(item.tweet_id)
+                return
             self._post_reply(
                 self.reply_gen.generate(
                     ReplyCategory.INVALID, author_name=item.author_name, original_text=item.text
@@ -239,15 +276,21 @@ class TweetRobotController:
                 self.state_store.mark_seen(item.tweet_id)
             return
 
-        author_norm = normalize_handle(item.author_handle)
         decision = "accepted"
         position: int | None = None
+        accepted_tts: str | None = None
         with self._lock:
             if author_norm in self._active_authors:
                 decision = "duplicate"
             elif len(self._queue) >= self.cfg.max_queue_size:
                 decision = "queue_full"
             else:
+                position = len(self._queue) + 1
+                accepted_tts = (
+                    f"Adding the command from {item.author_name} @{item.author_handle} "
+                    f"to place the {parsed.requested_color.value} duck on the target "
+                    f"to queue position #{position}."
+                )
                 cmd = Command(
                     tweet_id=item.tweet_id,
                     source=item.source,
@@ -257,10 +300,10 @@ class TweetRobotController:
                     requested_color=parsed.requested_color,
                     enqueued_at=time.time(),
                     replies_attempted=["accepted_ack"],
+                    tts_attempted=[accepted_tts],
                 )
                 self._queue.append(cmd)
                 self._active_authors.add(author_norm)
-                position = len(self._queue)
                 self._refresh_snapshot_locked()
             self.state_store.mark_seen(item.tweet_id)
 
@@ -288,6 +331,8 @@ class TweetRobotController:
                 item.author_handle,
                 position,
             )
+            if accepted_tts:
+                self.tts.speak(accepted_tts)
             self._post_reply(
                 self.reply_gen.generate(
                     ReplyCategory.ACCEPTED,
@@ -312,6 +357,19 @@ class TweetRobotController:
             if keyword in low:
                 return AdminCommand(action)
         return None
+
+    @staticmethod
+    def _looks_like_generated_self_reply(text: str) -> bool:
+        """Best-effort loop guard for single-account mode.
+
+        Direct parent-ID filtering in ``TwitterReader`` handles the common nested
+        reply case. This fallback catches generated acknowledgement/status text if
+        TwitterApi.io returns a self-authored reply without parent metadata.
+        """
+        low = (text or "").strip().lower()
+        if any(fragment in low for fragment in _GENERATED_SELF_REPLY_FRAGMENTS):
+            return True
+        return "duck" in low and ("queued" in low or "queue position" in low or "soon" in low)
 
     def _dispatch_admin(self, action, item: RawItem) -> None:
         from config import AdminCommand

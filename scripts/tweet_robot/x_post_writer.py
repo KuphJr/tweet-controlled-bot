@@ -1,9 +1,9 @@
 """Write-side abstraction for posting replies via the official X API (Tweepy).
 
-Posts as the bot account ``@KuphDevsRobot`` (OAuth 1.0a user context), which is
-separate from the admin account ``@KuphDev``. Replies always target the
-command's own tweet (quote-tweet or comment). Posting failures are caught and
-logged — they never crash the controller.
+Posts as the configured account (single-account default: ``@KuphDev``) via
+OAuth 1.0a user context. Replies always target the command's own tweet
+(quote-tweet or comment). Posting failures are caught and logged — they never
+crash the controller.
 
 Two-tier rate limiting (timestamps persisted via the state store):
   * normal replies (ack / invalid / queue-full / duplicate / admin-status):
@@ -120,13 +120,17 @@ class TweepyXPostWriter(XPostWriter):
     def _send(self, text: str, in_reply_to_tweet_id: str | None) -> bool:
         try:
             if in_reply_to_tweet_id:
-                self._client.create_tweet(text=text, in_reply_to_tweet_id=str(in_reply_to_tweet_id))
+                self._client.create_tweet(
+                    text=text,
+                    in_reply_to_tweet_id=str(in_reply_to_tweet_id),
+                    user_auth=True,
+                )
             else:
-                self._client.create_tweet(text=text)
+                self._client.create_tweet(text=text, user_auth=True)
             logger.info("Posted to X (reply_to=%s): %s", in_reply_to_tweet_id, text)
             return True
-        except Exception:  # noqa: BLE001
-            logger.exception("X post failed (continuing).")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("X post failed (continuing): %s", exc)
             return False
 
 

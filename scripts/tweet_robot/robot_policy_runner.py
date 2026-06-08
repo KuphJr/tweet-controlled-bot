@@ -54,7 +54,7 @@ logger = logging.getLogger("tweet_robot.policy_runner")
 _DURATION_MARGIN_S = 1.0
 
 # Number of frames to read/flush from a freshly opened camera before trusting one.
-_CAMERA_FLUSH_READS = 5
+_CAMERA_FLUSH_READS = 3
 
 
 class RobotPolicyRunner:
@@ -76,6 +76,7 @@ class RobotPolicyRunner:
                 height=self.cfg.camera_height,
                 fps=self.cfg.camera_fps,
                 fourcc=self.cfg.camera_fourcc,
+                warmup_s=self.cfg.camera_warmup_s,
             )
         }
 
@@ -187,6 +188,7 @@ class RobotPolicyRunner:
                 height=self.cfg.camera_height,
                 fps=self.cfg.camera_fps,
                 fourcc=self.cfg.camera_fourcc,
+                warmup_s=self.cfg.camera_warmup_s,
             )
         )
         cam.connect(warmup=True)

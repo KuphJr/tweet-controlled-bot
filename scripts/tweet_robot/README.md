@@ -4,7 +4,8 @@ Let people on X control a physical SO-101 arm during a livestream. Viewers
 **quote-tweet** or **comment (reply)** on a source tweet asking the robot to put
 one of four rubber ducks — **orange, green, yellow, pink** — on the target. The
 robot removes whatever duck is currently on the target (if any), places the
-requested one, narrates what it's doing with ElevenLabs TTS, and replies on X.
+requested one, narrates what it's doing with ElevenLabs TTS, and replies from
+the same `@KuphDev` account that posted the stream tweet.
 
 > **Design principle:** LLMs only *parse text* and *classify images*.
 > Deterministic, validated enums decide which policy runs. Raw model output never
@@ -31,9 +32,9 @@ Per command:
 
 1. Acknowledge immediately on accept ("Queued! You're #N…").
 2. Capture a top-down image, detect the current target state.
-3. If a duck is on the target, run `remove_<color>`, wait 1s, verify the target is clear.
+3. If a duck is on the target, run `remove_<color>`, wait 0.5s, verify the target is clear.
    (If the target is already empty, skip removal.)
-4. Run `place_<requested_color>`, wait 1s, verify the requested color is on the target.
+4. Run `place_<requested_color>`, wait 0.5s, verify the requested color is on the target.
 5. On any policy/vision/verification failure → ERROR state, narrate "Error
    encountered", and notify `@KuphDev`. Success posts **no** reply (the stream shows it).
 
@@ -48,9 +49,9 @@ Per command:
 | `command_parser.py` | OpenAI strict-JSON parse of text → `RequestedColor` + confidence gating. |
 | `workspace_detector.py` | OpenAI vision strict-JSON → `WorkspaceState`, with optional folder-mapped few-shot examples and retry-once. |
 | `reply_generator.py` | Short, fun, context-aware public replies — every category has a deterministic fallback. Cosmetic only. |
-| `twitter_reader.py` | Read-only TwitterApi.io polling of **quotes + replies**, no-backfill startup, cross-source dedup, ignores the bot's own posts. |
-| `x_post_writer.py` | Official X API (Tweepy) posting with reply targeting, two-tier rate limiting, and failure tolerance; `--dry-run` or blank creds → log-only. |
-| `tts.py` | ElevenLabs synth + configurable external player (`ffplay`/`aplay`/`paplay`) with a timeout; failure-tolerant. |
+| `twitter_reader.py` | Read-only TwitterApi.io polling of **quotes + direct replies**, no-backfill startup, cross-source dedup, nested-reply loop guard. |
+| `x_post_writer.py` | Official X API (Tweepy) posting from `@KuphDev` with reply targeting, two-tier rate limiting, and failure tolerance; `--dry-run` or blank creds → log-only. |
+| `tts.py` | Non-blocking ElevenLabs synth + configurable external player (`ffplay`/`aplay`/`paplay`); serialized so narrations do not overlap. |
 | `state_store.py` | Atomic JSON persistence (seen/processed/failed IDs, flags, rate-limit timestamps). Queue is **not** replayed on restart. |
 | `controller.py` | State machine, FIFO queue + per-author limit, acceptance rules, the remove→place pipeline, admin handling, JSONL logging. |
 | `run_tweet_robot.py` | CLI entry point: wiring, signal handling, graceful shutdown, dry-run / no-robot modes. |
@@ -75,10 +76,10 @@ Per command:
    | --- | --- |
    | `OPENAI_API_KEY`, `OPENAI_COMMAND_MODEL`, `OPENAI_VISION_MODEL` | platform.openai.com. Defaults: `gpt-5.4-mini` for command parsing + reply text (fast/cheap), `gpt-5.5` for vision (SOTA, for reliable success/error detection). |
    | `TWITTERAPI_IO_API_KEY` | twitterapi.io — **read** side (quotes + replies). |
-   | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com — OAuth 1.0a **user-context** creds for the **bot** account `@KuphDevs_Robot` (not the admin `@KuphDev`). No bearer token needed. |
+   | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com — OAuth 1.0a **user-context** creds for `@KuphDev`, the same account that posts the stream tweet and replies. No bearer token needed. |
    | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID` | elevenlabs.io — optional TTS. |
    | `AUDIO_PLAYER_CMD` | Ubuntu playback command; the audio file path is appended as the last arg. `ffplay -nodisp -autoexit -loglevel quiet` (default), `paplay`, or `aplay`. ElevenLabs returns MP3 — `ffplay` handles it directly; `aplay`/`paplay` expect WAV. |
-   | `ADMIN_HANDLE`, `BOT_HANDLE` | `KuphDev` / `KuphDevs_Robot`. |
+   | `ADMIN_HANDLE`, `BOT_HANDLE` | Single-account mode defaults both to `KuphDev`. |
 
    `.env` is git-ignored. Never commit real secrets.
 
@@ -109,7 +110,7 @@ vision_examples/
 └── pink duck on target/
 ```
 
-Up to 2 images per folder are sent as labeled few-shot references (examples at
+Up to 3 images per folder are sent as labeled few-shot references (examples at
 "low" detail to keep token cost flat). The detector works fine with no examples
 at all. Add more `error` variants to improve robustness.
 
@@ -171,12 +172,14 @@ a normal command.
 - **One active-or-queued command per author.** A second request while one is
   pending gets a "you already have one" reply, not a second slot.
 - Duplicate tweet IDs are ignored. Invalid commands get a helpful reply but aren't queued.
-- The bot **ignores its own posts** to avoid feedback loops.
+- Single-account mode lets `@KuphDev` issue admin and normal commands. To avoid
+  feedback loops, nested replies are ignored when TwitterApi.io provides parent
+  metadata, and generated self-authored acknowledgement/status text is ignored.
 - Posting is limited by default to: queued acknowledgements, invalid-command
   replies, queue-full / duplicate-author replies, error notifications, and
   admin/status replies. **No success replies.**
-- Rate limits: `MAX_REPLIES_PER_HOUR` (60) for normal replies;
-  `ABSOLUTE_MAX_POSTS_PER_HOUR` (80) for all posts including critical `@KuphDev`
+- Rate limits: `MAX_REPLIES_PER_HOUR` (30) for normal replies;
+  `ABSOLUTE_MAX_POSTS_PER_HOUR` (50) for all posts including critical `@KuphDev`
   notifications. Over the normal cap → keep running, skip normal replies. Over the
   absolute cap → post nothing, log intended text.
 
@@ -189,7 +192,8 @@ a normal command.
   or relative to the repo root). Defaults live in `config.py` (`_DEFAULT_POLICY_PATHS`).
 - **Tune behavior** via env: `MAX_REPLIES_PER_HOUR`, `ABSOLUTE_MAX_POSTS_PER_HOUR`,
   `MAX_QUEUE_SIZE`, `POLICY_TIMEOUT_S`, `COMMAND_CONFIDENCE_THRESHOLD`,
-  `VISION_CONFIDENCE_THRESHOLD`, `TTS_TIMEOUT_S`.
+  `VISION_CONFIDENCE_THRESHOLD`, `CAMERA_WARMUP_S`, `POST_POLICY_WAIT_S`,
+  `TTS_TIMEOUT_S`.
 - **Change voice/models**: `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID`,
   `OPENAI_COMMAND_MODEL` / `OPENAI_VISION_MODEL`.
 
@@ -234,7 +238,7 @@ a normal command.
 | --- | --- |
 | `camera ... failed to open` / busy | Another process holds `/dev/video0`. The robot disconnects between policies so vision can grab frames; make sure nothing else (e.g. a preview script) is using the camera. |
 | No audio | Wrong `AUDIO_PLAYER_CMD` for your system, or MP3 vs WAV mismatch (`aplay`/`paplay` need WAV; prefer `ffplay`). Failures are logged and ignored. |
-| Replies not posting | Check the X OAuth 1.0a creds and that you're not in `--dry-run`; watch logs for rate-limit messages. Posting failures never crash the robot. |
+| Replies not posting | Check the X OAuth 1.0a creds and that you're not in `--dry-run`; watch logs for rate-limit messages. X self-serve API replies may 403 unless the replying account has been summoned by the target tweet's author; using `@KuphDev` for both the source tweet and replies makes comment/quote acknowledgements more reliable. Posting failures never crash the robot. |
 | Vision misclassifies | Add/curate `vision_examples/` (especially `error` variants); re-author the camera crop so the target is centered; raise `VISION_CONFIDENCE_THRESHOLD`. |
 | Policy timeout / ERROR | The policy didn't return to neutral within `POLICY_TIMEOUT_S`. Inspect the arm, then `reset error` (admin) to resume. |
 | Want real hardware but no X posting | Leave the `X_*` credentials blank in `.env` — the writer falls back to log-only. (`--dry-run` also disables posting but skips the robot.) |

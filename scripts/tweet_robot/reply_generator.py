@@ -166,8 +166,7 @@ class ReplyGenerator:
                 {"role": "system", "content": system},
                 {"role": "user", "content": "\n".join(ctx_lines)},
             ],
-            temperature=0.9,
-            max_tokens=200,
+            max_tokens=300,
         )
         return resp.choices[0].message.content or ""
 

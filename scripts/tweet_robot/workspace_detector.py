@@ -259,7 +259,6 @@ class WorkspaceDetector:
                 {"role": "user", "content": content},
             ],
             response_format={"type": "json_schema", "json_schema": _JSON_SCHEMA},
-            temperature=0,
         )
         return json.loads(resp.choices[0].message.content or "{}")
 

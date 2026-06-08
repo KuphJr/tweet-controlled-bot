@@ -280,11 +280,11 @@ class AppConfig:
 
     # Handles
     admin_handle: str = "KuphDev"
-    bot_handle: str = "KuphDevs_Robot"
+    bot_handle: str = "KuphDev"
 
     # Rate limits / queue / timeouts
-    max_replies_per_hour: int = 60
-    absolute_max_posts_per_hour: int = 80
+    max_replies_per_hour: int = 30
+    absolute_max_posts_per_hour: int = 50
     max_queue_size: int = 5
     policy_timeout_s: int = 30
 
@@ -304,10 +304,11 @@ class AppConfig:
     camera_height: int = 720
     camera_fps: int = 30
     camera_fourcc: str = "MJPG"
+    camera_warmup_s: float = 0.5
     control_fps: int = 30
 
     # Verification pause after each policy before re-capturing
-    post_policy_wait_s: float = 1.0
+    post_policy_wait_s: float = 0.5
 
     # Paths
     state_file: Path = field(default_factory=lambda: DEFAULT_STATE_FILE)
@@ -336,9 +337,9 @@ class AppConfig:
             elevenlabs_model_id=_env_str("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
             audio_player_cmd=_env_str("AUDIO_PLAYER_CMD", "ffplay -nodisp -autoexit -loglevel quiet"),
             admin_handle=_env_str("ADMIN_HANDLE", "KuphDev"),
-            bot_handle=_env_str("BOT_HANDLE", "KuphDevs_Robot"),
-            max_replies_per_hour=_env_int("MAX_REPLIES_PER_HOUR", 60),
-            absolute_max_posts_per_hour=_env_int("ABSOLUTE_MAX_POSTS_PER_HOUR", 80),
+            bot_handle=_env_str("BOT_HANDLE", "KuphDev"),
+            max_replies_per_hour=_env_int("MAX_REPLIES_PER_HOUR", 30),
+            absolute_max_posts_per_hour=_env_int("ABSOLUTE_MAX_POSTS_PER_HOUR", 50),
             max_queue_size=_env_int("MAX_QUEUE_SIZE", 5),
             policy_timeout_s=_env_int("POLICY_TIMEOUT_S", 30),
             command_confidence_threshold=_env_float("COMMAND_CONFIDENCE_THRESHOLD", 0.5),
@@ -347,6 +348,8 @@ class AppConfig:
             robot_port=_env_str("ROBOT_PORT", "/dev/ttyACM0"),
             robot_id=_env_str("ROBOT_ID", "so101_follower"),
             camera_path=_env_str("CAMERA_PATH", "/dev/video0"),
+            camera_warmup_s=_env_float("CAMERA_WARMUP_S", 0.5),
+            post_policy_wait_s=_env_float("POST_POLICY_WAIT_S", 0.5),
         )
 
     @property

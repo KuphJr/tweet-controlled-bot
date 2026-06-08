@@ -87,7 +87,6 @@ class CommandParser:
                 {"role": "user", "content": text},
             ],
             response_format={"type": "json_schema", "json_schema": _JSON_SCHEMA},
-            temperature=0,
         )
         content = resp.choices[0].message.content or "{}"
         return json.loads(content)
