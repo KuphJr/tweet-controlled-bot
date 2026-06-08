@@ -158,7 +158,7 @@ class ReplyGenerator:
             "robot arm that places colored rubber ducks on a target when requested. One sentence, under "
             f"{_MAX_REPLY_CHARS} characters. No hashtags. Do not invent facts or "
             "promise specific timing beyond 'soon'. Do not include @mentions. "
-            "Return only the reply text. Act as if you are the robot itself, speaking to the user."
+            "Return only the reply text."
         )
         resp = self._client.chat.completions.create(
             model=self.cfg.openai_command_model,
@@ -166,7 +166,7 @@ class ReplyGenerator:
                 {"role": "system", "content": system},
                 {"role": "user", "content": "\n".join(ctx_lines)},
             ],
-            max_tokens=300,
+            max_completion_tokens=1000,
         )
         return resp.choices[0].message.content or ""
 
@@ -178,9 +178,12 @@ class ReplyGenerator:
         """Reply shown to a user who sends a command while the system is broken."""
         return f"Something is broken. @{self.cfg.admin_handle} has been notified."
 
-    def error_admin_notify(self, detail: str) -> str:
-        """Critical error notification tagging the admin."""
-        return _clean(f"@{self.cfg.admin_handle} the robot hit an error: {detail}")
+    def error_admin_notify(self, detail: str | None = None) -> str:
+        """Critical error notification tagging the admin without leaking internals."""
+        return _clean(
+            f"@{self.cfg.admin_handle} the robot hit an error. "
+            "Details are in the local logs/state file."
+        )
 
     def admin_status_reply(self, status_text: str) -> str:
         return _clean(status_text)

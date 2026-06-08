@@ -278,7 +278,6 @@ class TweetRobotController:
 
         decision = "accepted"
         position: int | None = None
-        accepted_tts: str | None = None
         with self._lock:
             if author_norm in self._active_authors:
                 decision = "duplicate"
@@ -286,11 +285,6 @@ class TweetRobotController:
                 decision = "queue_full"
             else:
                 position = len(self._queue) + 1
-                accepted_tts = (
-                    f"Adding the command from {item.author_name} @{item.author_handle} "
-                    f"to place the {parsed.requested_color.value} duck on the target "
-                    f"to queue position #{position}."
-                )
                 cmd = Command(
                     tweet_id=item.tweet_id,
                     source=item.source,
@@ -300,7 +294,6 @@ class TweetRobotController:
                     requested_color=parsed.requested_color,
                     enqueued_at=time.time(),
                     replies_attempted=["accepted_ack"],
-                    tts_attempted=[accepted_tts],
                 )
                 self._queue.append(cmd)
                 self._active_authors.add(author_norm)
@@ -331,8 +324,6 @@ class TweetRobotController:
                 item.author_handle,
                 position,
             )
-            if accepted_tts:
-                self.tts.speak(accepted_tts)
             self._post_reply(
                 self.reply_gen.generate(
                     ReplyCategory.ACCEPTED,
@@ -482,6 +473,13 @@ class TweetRobotController:
         """Run remove->place. Returns a failure reason, ``_ABORTED``, or None."""
         req = cmd.requested_color
 
+        request_tts = (
+            f"Executing the request from {cmd.author_name} @{cmd.author_handle} "
+            f"to place the {req.value} duck on the target."
+        )
+        log_entry["tts_attempted"].append(request_tts)
+        self.tts.speak(request_tts)
+
         # --- 1. Initial workspace state ---
         before = self.detector.detect_state(self.runner.capture_workspace_image)
         log_entry["workspace_state_before"] = before.state.value
@@ -522,14 +520,9 @@ class TweetRobotController:
             logger.info("Simulating: initial state %s, skipping removal.", before.state.value)
 
         # --- 4. Placement ---
-        placement_tts = (
-            f"Executing the request from {cmd.author_name} @{cmd.author_handle} "
-            f"to place the {req.value} duck on the target."
-        )
+        placement_tts = f"Placing the {req.value} duck on the target."
         log_entry["tts_attempted"].append(placement_tts)
-        self.tts.speak(
-            placement_tts
-        )
+        self.tts.speak(placement_tts)
         res = self.runner.run_policy(
             get_policy_path(req, PolicyAction.PLACE),
             f"Place {req.value} duck on target",
