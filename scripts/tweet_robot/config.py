@@ -287,6 +287,7 @@ class AppConfig:
     absolute_max_posts_per_hour: int = 50
     max_queue_size: int = 5
     policy_timeout_s: int = 30
+    policy_error_retries: int = 2
 
     # Confidence gating
     command_confidence_threshold: float = 0.5
@@ -342,6 +343,7 @@ class AppConfig:
             absolute_max_posts_per_hour=_env_int("ABSOLUTE_MAX_POSTS_PER_HOUR", 50),
             max_queue_size=_env_int("MAX_QUEUE_SIZE", 5),
             policy_timeout_s=_env_int("POLICY_TIMEOUT_S", 30),
+            policy_error_retries=_env_int("POLICY_ERROR_RETRIES", 2),
             command_confidence_threshold=_env_float("COMMAND_CONFIDENCE_THRESHOLD", 0.5),
             vision_confidence_threshold=_env_float("VISION_CONFIDENCE_THRESHOLD", 0.55),
             tts_timeout_s=_env_float("TTS_TIMEOUT_S", 20.0),

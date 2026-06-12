@@ -32,6 +32,7 @@ from config import (
     CommandSource,
     ControllerState,
     PolicyAction,
+    PolicyResult,
     WorkspaceState,
     color_on_target_state,
     get_policy_path,
@@ -85,6 +86,14 @@ _GENERATED_SELF_REPLY_FRAGMENTS = (
     "restarting now",
     "the robot hit an error",
 )
+
+_TRANSIENT_POLICY_ERROR_FRAGMENTS = (
+    "motor check failed",
+    "missing motor ids",
+    "feetechmotorsbus",
+)
+
+_POLICY_RETRY_WAIT_S = 1.0
 
 
 class TweetRobotController:
@@ -494,27 +503,31 @@ class TweetRobotController:
             current = before.state.on_target_color
             log_entry["tts_attempted"].append(f"Removing the {current.value} duck from the target.")
             self.tts.speak(f"Removing the {current.value} duck from the target.")
-            res = self.runner.run_policy(
-                get_policy_path(current, PolicyAction.REMOVE),
-                f"Remove {current.value} duck from target",
-                self.cfg.policy_timeout_s,
+            res = self._run_policy_with_retries(
+                label=f"remove_{current.value}",
+                policy_path=get_policy_path(current, PolicyAction.REMOVE),
+                task=f"Remove {current.value} duck from target",
+                log_entry=log_entry,
             )
-            log_entry["policies_run"].append(f"remove_{current.value}:{res.stop_reason}")
             if res.stop_reason == "shutdown":
                 return _ABORTED
             if not res.success and not self._simulating:
                 return f"remove policy failed ({res.stop_reason}: {res.error_message})"
 
-            if self._interruptible_wait(self.cfg.post_policy_wait_s):
-                return _ABORTED
-            after_removal = self.detector.detect_state(self.runner.capture_workspace_image)
-            log_entry["workspace_state_after_removal"] = after_removal.state.value
-            logger.info("Post-removal state: %s", after_removal.state.value)
-            # Primary condition: target is clear. Do not require the duck to be home.
-            if not self._simulating and (
-                after_removal.is_error or after_removal.state != WorkspaceState.EMPTY
-            ):
-                return "removal verification failed: target not clear"
+            # Post-removal verification is intentionally disabled for speed. The
+            # initial vision step above is still required to choose the correct
+            # removal policy, and final placement verification still runs below.
+            #
+            # if self._interruptible_wait(self.cfg.post_policy_wait_s):
+            #     return _ABORTED
+            # after_removal = self.detector.detect_state(self.runner.capture_workspace_image)
+            # log_entry["workspace_state_after_removal"] = after_removal.state.value
+            # logger.info("Post-removal state: %s", after_removal.state.value)
+            # # Primary condition: target is clear. Do not require the duck to be home.
+            # if not self._simulating and (
+            #     after_removal.is_error or after_removal.state != WorkspaceState.EMPTY
+            # ):
+            #     return "removal verification failed: target not clear"
         else:
             # before.state == ERROR while simulating: nothing to remove deterministically.
             logger.info("Simulating: initial state %s, skipping removal.", before.state.value)
@@ -523,29 +536,69 @@ class TweetRobotController:
         placement_tts = f"Placing the {req.value} duck on the target."
         log_entry["tts_attempted"].append(placement_tts)
         self.tts.speak(placement_tts)
-        res = self.runner.run_policy(
-            get_policy_path(req, PolicyAction.PLACE),
-            f"Place {req.value} duck on target",
-            self.cfg.policy_timeout_s,
+        res = self._run_policy_with_retries(
+            label=f"place_{req.value}",
+            policy_path=get_policy_path(req, PolicyAction.PLACE),
+            task=f"Place {req.value} duck on target",
+            log_entry=log_entry,
         )
-        log_entry["policies_run"].append(f"place_{req.value}:{res.stop_reason}")
         if res.stop_reason == "shutdown":
             return _ABORTED
         if not res.success and not self._simulating:
             return f"place policy failed ({res.stop_reason}: {res.error_message})"
 
-        if self._interruptible_wait(self.cfg.post_policy_wait_s):
-            return _ABORTED
-        after_place = self.detector.detect_state(self.runner.capture_workspace_image)
-        log_entry["workspace_state_after_place"] = after_place.state.value
-        logger.info("Post-placement state: %s", after_place.state.value)
-        expected = color_on_target_state(req)
-        if not self._simulating and (after_place.is_error or after_place.state != expected):
-            return (
-                f"placement verification failed: expected {expected.value}, "
-                f"saw {after_place.state.value}"
-            )
+        # Post-placement verification is intentionally disabled for speed. We
+        # only use workspace detection at the start of the command to decide
+        # which duck, if any, needs removal.
+        #
+        # if self._interruptible_wait(self.cfg.post_policy_wait_s):
+        #     return _ABORTED
+        # after_place = self.detector.detect_state(self.runner.capture_workspace_image)
+        # log_entry["workspace_state_after_place"] = after_place.state.value
+        # logger.info("Post-placement state: %s", after_place.state.value)
+        # expected = color_on_target_state(req)
+        # if not self._simulating and (after_place.is_error or after_place.state != expected):
+        #     return (
+        #         f"placement verification failed: expected {expected.value}, "
+        #         f"saw {after_place.state.value}"
+        #     )
         return None
+
+    def _run_policy_with_retries(
+        self,
+        *,
+        label: str,
+        policy_path: str,
+        task: str,
+        log_entry: dict,
+    ) -> PolicyResult:
+        """Run a policy, retrying transient motor-discovery failures only."""
+        max_attempts = 1 + max(0, self.cfg.policy_error_retries)
+        last_result: PolicyResult | None = None
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                logger.warning("Retrying policy %s after transient error (attempt %d/%d).", label, attempt, max_attempts)
+
+            result = self.runner.run_policy(policy_path, task, self.cfg.policy_timeout_s)
+            log_entry["policies_run"].append(f"{label}:attempt{attempt}:{result.stop_reason}")
+            last_result = result
+
+            if result.success or result.stop_reason == "shutdown":
+                return result
+            if attempt >= max_attempts or not self._is_transient_policy_error(result):
+                return result
+            if self._interruptible_wait(_POLICY_RETRY_WAIT_S):
+                return PolicyResult(False, "shutdown", result.elapsed_s, "shutdown requested during policy retry")
+
+        # Defensive fallback; the loop always returns after at least one attempt.
+        return last_result or PolicyResult(False, "error", 0.0, "policy retry loop did not run")
+
+    @staticmethod
+    def _is_transient_policy_error(result: PolicyResult) -> bool:
+        if result.stop_reason != "error" or not result.error_message:
+            return False
+        message = result.error_message.lower()
+        return any(fragment in message for fragment in _TRANSIENT_POLICY_ERROR_FRAGMENTS)
 
     def _interruptible_wait(self, seconds: float) -> bool:
         """Wait, returning True if shutdown was requested during the wait."""

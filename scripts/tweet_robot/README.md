@@ -191,9 +191,9 @@ a normal command.
   `.env` (`POLICY_PLACE_ORANGE`, `POLICY_REMOVE_GREEN`, …) to a new path (absolute
   or relative to the repo root). Defaults live in `config.py` (`_DEFAULT_POLICY_PATHS`).
 - **Tune behavior** via env: `MAX_REPLIES_PER_HOUR`, `ABSOLUTE_MAX_POSTS_PER_HOUR`,
-  `MAX_QUEUE_SIZE`, `POLICY_TIMEOUT_S`, `COMMAND_CONFIDENCE_THRESHOLD`,
-  `VISION_CONFIDENCE_THRESHOLD`, `CAMERA_WARMUP_S`, `POST_POLICY_WAIT_S`,
-  `TTS_TIMEOUT_S`.
+  `MAX_QUEUE_SIZE`, `POLICY_TIMEOUT_S`, `POLICY_ERROR_RETRIES`,
+  `COMMAND_CONFIDENCE_THRESHOLD`, `VISION_CONFIDENCE_THRESHOLD`,
+  `CAMERA_WARMUP_S`, `POST_POLICY_WAIT_S`, `TTS_TIMEOUT_S`.
 - **Change voice/models**: `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID`,
   `OPENAI_COMMAND_MODEL` / `OPENAI_VISION_MODEL`.
 
@@ -240,6 +240,6 @@ a normal command.
 | No audio | Wrong `AUDIO_PLAYER_CMD` for your system, or MP3 vs WAV mismatch (`aplay`/`paplay` need WAV; prefer `ffplay`). Failures are logged and ignored. |
 | Replies not posting | Check the X OAuth 1.0a creds and that you're not in `--dry-run`; watch logs for rate-limit messages. X self-serve API replies may 403 unless the replying account has been summoned by the target tweet's author; using `@KuphDev` for both the source tweet and replies makes comment/quote acknowledgements more reliable. Posting failures never crash the robot. |
 | Vision misclassifies | Add/curate `vision_examples/` (especially `error` variants); re-author the camera crop so the target is centered; raise `VISION_CONFIDENCE_THRESHOLD`. |
-| Policy timeout / ERROR | The policy didn't return to neutral within `POLICY_TIMEOUT_S`. Inspect the arm, then `reset error` (admin) to resume. |
+| Policy timeout / ERROR | The policy didn't return to neutral within `POLICY_TIMEOUT_S`, or a non-transient policy error occurred. Transient motor discovery errors (for example, a brief missing servo during connect) are retried up to `POLICY_ERROR_RETRIES` times before entering ERROR. |
 | Want real hardware but no X posting | Leave the `X_*` credentials blank in `.env` — the writer falls back to log-only. (`--dry-run` also disables posting but skips the robot.) |
 | `--source-tweet-id is required` | Provide the source tweet ID users should quote/comment on. |
