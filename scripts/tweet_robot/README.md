@@ -49,7 +49,7 @@ Per command:
 | `command_parser.py` | OpenAI strict-JSON parse of text → `RequestedColor` + confidence gating. |
 | `workspace_detector.py` | OpenAI vision strict-JSON → `WorkspaceState`, with optional folder-mapped few-shot examples and retry-once. |
 | `reply_generator.py` | Short, fun, context-aware public replies — every category has a deterministic fallback. Cosmetic only. |
-| `twitter_reader.py` | Read-only TwitterApi.io polling of **quotes + direct replies**, no-backfill startup, cross-source dedup, nested-reply loop guard. |
+| `twitter_reader.py` | Read-only TwitterApi.io polling of **quotes + replies/sub-replies**, no-backfill startup, cross-source dedup, generated-self-reply loop guard. |
 | `x_post_writer.py` | Official X API (Tweepy) posting from `@KuphDev` with reply targeting, two-tier rate limiting, and failure tolerance; `--dry-run` or blank creds → log-only. |
 | `tts.py` | Non-blocking ElevenLabs synth + configurable external player (`ffplay`/`aplay`/`paplay`); serialized so narrations do not overlap. |
 | `state_store.py` | Atomic JSON persistence (seen/processed/failed IDs, flags, rate-limit timestamps). Queue is **not** replayed on restart. |
@@ -134,7 +134,7 @@ uv run python scripts/tweet_robot/run_tweet_robot.py --source-tweet-id 123456789
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--source-tweet-id <id>` | — | Required for live runs. The tweet users quote/comment on. |
-| `--poll-interval-s <s>` | `10` | Seconds between TwitterApi.io polls. |
+| `--poll-interval-s <s>` | `15` | Seconds between standard TwitterApi.io quote/reply polls. The supplemental `replies/v2` scan defaults to every 180s and is throttled separately by env. |
 | `--dry-run` | off | Do not move the robot and **do not post** (log-only writer). Still parses, captures/checks images, generates intended replies, and logs. Verification mismatches are logged, not failed. |
 | `--no-tts` | off | Disable ElevenLabs narration (log intended speech). |
 | `--no-robot` | off | Skip policy execution; vision still runs via a standalone camera open if available. |
@@ -172,9 +172,10 @@ a normal command.
 - **One active-or-queued command per author.** A second request while one is
   pending gets a "you already have one" reply, not a second slot.
 - Duplicate tweet IDs are ignored. Invalid commands get a helpful reply but aren't queued.
-- Single-account mode lets `@KuphDev` issue admin and normal commands. To avoid
-  feedback loops, nested replies are ignored when TwitterApi.io provides parent
-  metadata, and generated self-authored acknowledgement/status text is ignored.
+- Single-account mode lets `@KuphDev` issue admin and normal commands. Replies
+  and sub-replies in the source conversation can be commands. To avoid feedback
+  loops, self-authored `@KuphDev` sub-replies are ignored, while direct replies
+  to the source tweet and quotes can still be admin or normal commands.
 - Posting is limited by default to: queued acknowledgements, invalid-command
   replies, queue-full / duplicate-author replies, error notifications, and
   admin/status replies. **No success replies.**
@@ -193,6 +194,7 @@ a normal command.
 - **Tune behavior** via env: `MAX_REPLIES_PER_HOUR`, `ABSOLUTE_MAX_POSTS_PER_HOUR`,
   `MAX_QUEUE_SIZE`, `POLICY_TIMEOUT_S`, `POLICY_ERROR_RETRIES`,
   `COMMAND_CONFIDENCE_THRESHOLD`, `VISION_CONFIDENCE_THRESHOLD`,
+  `REPLIES_V2_POLL_INTERVAL_S`, `REPLIES_V2_MAX_PAGES_PER_POLL`,
   `CAMERA_WARMUP_S`, `POST_POLICY_WAIT_S`, `TTS_TIMEOUT_S`.
 - **Change voice/models**: `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID`,
   `OPENAI_COMMAND_MODEL` / `OPENAI_VISION_MODEL`.

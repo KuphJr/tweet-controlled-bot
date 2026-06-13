@@ -288,6 +288,8 @@ class AppConfig:
     max_queue_size: int = 5
     policy_timeout_s: int = 30
     policy_error_retries: int = 2
+    replies_v2_poll_interval_s: float = 180.0
+    replies_v2_max_pages_per_poll: int = 1
 
     # Confidence gating
     command_confidence_threshold: float = 0.5
@@ -317,7 +319,7 @@ class AppConfig:
     vision_examples_dir: Path = field(default_factory=lambda: VISION_EXAMPLES_DIR)
 
     # Runtime toggles (set by CLI)
-    poll_interval_s: float = 10.0
+    poll_interval_s: float = 15.0
     dry_run: bool = False
     no_tts: bool = False
     no_robot: bool = False
@@ -344,6 +346,8 @@ class AppConfig:
             max_queue_size=_env_int("MAX_QUEUE_SIZE", 5),
             policy_timeout_s=_env_int("POLICY_TIMEOUT_S", 30),
             policy_error_retries=_env_int("POLICY_ERROR_RETRIES", 2),
+            replies_v2_poll_interval_s=_env_float("REPLIES_V2_POLL_INTERVAL_S", 180.0),
+            replies_v2_max_pages_per_poll=_env_int("REPLIES_V2_MAX_PAGES_PER_POLL", 1),
             command_confidence_threshold=_env_float("COMMAND_CONFIDENCE_THRESHOLD", 0.5),
             vision_confidence_threshold=_env_float("VISION_CONFIDENCE_THRESHOLD", 0.55),
             tts_timeout_s=_env_float("TTS_TIMEOUT_S", 20.0),

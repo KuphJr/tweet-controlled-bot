@@ -236,6 +236,18 @@ class TweetRobotController:
                 self.state_store.mark_seen(item.tweet_id)
             return
 
+        if (
+            single_account
+            and author_norm == self.cfg.admin_handle_norm
+            and item.source == CommandSource.REPLY
+            and item.in_reply_to_tweet_id
+            and item.in_reply_to_tweet_id != self.source_tweet_id
+        ):
+            logger.info("Ignoring self-authored sub-reply %s to prevent reply loops.", item.tweet_id)
+            with self._lock:
+                self.state_store.mark_seen(item.tweet_id)
+            return
+
         if single_account and author_norm == self.cfg.admin_handle_norm and self._looks_like_generated_self_reply(item.text):
             logger.info("Ignoring generated self-authored reply %s.", item.tweet_id)
             with self._lock:

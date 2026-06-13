@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--source-tweet-id", required=True, help="Tweet ID users quote/comment to command the robot.")
-    p.add_argument("--poll-interval-s", type=float, default=10.0, help="Seconds between TwitterApi.io polls.")
+    p.add_argument("--poll-interval-s", type=float, default=15.0, help="Seconds between standard TwitterApi.io polls.")
     p.add_argument("--dry-run", action="store_true", help="Do not move the robot or post; parse/vision/log only.")
     p.add_argument("--no-tts", action="store_true", help="Disable ElevenLabs narration.")
     p.add_argument("--no-robot", action="store_true", help="Skip policy execution (vision still runs if possible).")

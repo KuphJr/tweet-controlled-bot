@@ -6,7 +6,10 @@ Polls two endpoints for the same source tweet and merges them into one stream of
   * Quotes:  ``GET /twitter/tweet/quotes?tweetId=<id>&cursor=...`` -> items under
     ``tweets``; supports ``sinceTime``/``untilTime`` (unix seconds).
   * Replies: ``GET /twitter/tweet/replies?tweetId=<id>&cursor=...`` -> items under
-    ``replies`` (we also accept ``tweets`` defensively).
+    ``replies`` (we also accept ``tweets`` defensively). We additionally scan
+    ``/twitter/tweet/replies/v2`` as a supplemental source because it returns
+    some low-trust / low-follower replies that the standard endpoint omits, and
+    it includes sub-replies in the source conversation.
   * Both: ``has_next_page`` / ``next_cursor`` for pagination, header ``X-API-Key``,
     ordered newest-first, ~20/page. Tweet fields: ``id``, ``text``, ``createdAt``
     ("Tue Dec 10 07:00:30 +0000 2024"), ``inReplyToId``, ``author.userName`` /
@@ -34,6 +37,7 @@ logger = logging.getLogger("tweet_robot.twitter_reader")
 _BASE_URL = "https://api.twitterapi.io"
 _QUOTES_PATH = "/twitter/tweet/quotes"
 _REPLIES_PATH = "/twitter/tweet/replies"
+_REPLIES_V2_PATH = "/twitter/tweet/replies/v2"
 _TWITTER_DATE_FMT = "%a %b %d %H:%M:%S %z %Y"
 
 # Safety caps so a single poll can never loop forever (has_next_page can lie).
@@ -51,6 +55,7 @@ class RawItem:
     text: str
     created_at: float  # epoch seconds
     in_reply_to_tweet_id: str | None = None
+    conversation_id: str | None = None
 
 
 def _parse_created_at(value: str | None) -> float:
@@ -69,6 +74,7 @@ class TwitterReader:
         self.source_tweet_id = str(source_tweet_id)
         self.start_time = start_time
         self._headers = {"X-API-Key": cfg.twitterapi_io_api_key}
+        self._last_replies_v2_poll_s = 0.0
 
     # ------------------------------------------------------------------ #
     # HTTP                                                               #
@@ -120,6 +126,7 @@ class TwitterReader:
             text=str(raw.get("text", "") or ""),
             created_at=_parse_created_at(raw.get("createdAt")),
             in_reply_to_tweet_id=self._extract_parent_id(raw),
+            conversation_id=str(raw.get("conversationId") or "") or None,
         )
 
     # ------------------------------------------------------------------ #
@@ -191,6 +198,69 @@ class TwitterReader:
 
         return collected
 
+    def _page_replies_v2(self, *, seen_ids: set[str], max_pages: int) -> list[RawItem]:
+        """Scan replies/v2 as a supplemental source for source-conversation replies.
+
+        The v2 endpoint can include the source tweet and nested replies, and its
+        ordering is tree-like rather than strictly newest-first. So do not stop
+        early on seen/old rows; scan capped pages and filter to replies inside
+        the source conversation.
+        """
+        collected: list[RawItem] = []
+        cursor = ""
+        for _ in range(max_pages):
+            params: dict[str, object] = {"tweetId": self.source_tweet_id}
+            if cursor:
+                params["cursor"] = cursor
+
+            payload = self._get(_REPLIES_V2_PATH, params)
+            if payload is None:
+                break
+
+            rows = self._extract_list(payload)
+            if not rows:
+                break
+
+            for raw in rows:
+                item = self._to_item(raw, CommandSource.REPLY)
+                if item is None:
+                    continue
+                if item.tweet_id == self.source_tweet_id:
+                    continue
+                if item.tweet_id in seen_ids:
+                    continue
+                if item.created_at < self.start_time:
+                    continue
+                if not item.in_reply_to_tweet_id:
+                    continue
+                if (
+                    item.in_reply_to_tweet_id != self.source_tweet_id
+                    and item.conversation_id != self.source_tweet_id
+                ):
+                    continue
+                collected.append(item)
+
+            if not payload.get("has_next_page"):
+                break
+            cursor = payload.get("next_cursor") or ""
+            if not cursor:
+                break
+
+        return collected
+
+    def _should_poll_replies_v2(self) -> bool:
+        """Return True when the supplemental, expensive replies/v2 scan is due."""
+        interval_s = max(0.0, float(self.cfg.replies_v2_poll_interval_s))
+        max_pages = int(self.cfg.replies_v2_max_pages_per_poll)
+        if interval_s <= 0.0 or max_pages <= 0:
+            return False
+
+        now = time.time()
+        if self._last_replies_v2_poll_s == 0.0 or now - self._last_replies_v2_poll_s >= interval_s:
+            self._last_replies_v2_poll_s = now
+            return True
+        return False
+
     # ------------------------------------------------------------------ #
     # Public API                                                         #
     # ------------------------------------------------------------------ #
@@ -199,11 +269,17 @@ class TwitterReader:
         """Return new items from BOTH sources, deduped, oldest-first.
 
         Excludes already-seen IDs, the posting account's own posts in
-        separate-account mode, nested replies, and anything older than
-        ``start_time``. The caller is responsible for marking returned IDs seen.
+        separate-account mode, and anything older than ``start_time``. Standard
+        replies only contribute direct replies; replies/v2 supplements direct
+        replies and sub-replies in the source conversation. The caller is
+        responsible for marking returned IDs seen.
         """
         merged: dict[str, RawItem] = {}
-        for path, source in ((_QUOTES_PATH, CommandSource.QUOTE), (_REPLIES_PATH, CommandSource.REPLY)):
+        sources: tuple[tuple[str, CommandSource], ...] = (
+            (_QUOTES_PATH, CommandSource.QUOTE),
+            (_REPLIES_PATH, CommandSource.REPLY),
+        )
+        for path, source in sources:
             items = self._page_source(
                 path,
                 source,
@@ -220,6 +296,16 @@ class TwitterReader:
                     continue  # never process the separate posting account's own posts
                 merged[item.tweet_id] = item
 
+        if self._should_poll_replies_v2():
+            max_pages = max(1, int(self.cfg.replies_v2_max_pages_per_poll))
+            for item in self._page_replies_v2(seen_ids=seen_ids, max_pages=max_pages):
+                if item.tweet_id in seen_ids or item.tweet_id in merged:
+                    continue
+                single_account = self.cfg.bot_handle_norm == self.cfg.admin_handle_norm
+                if normalize_handle(item.author_handle) == self.cfg.bot_handle_norm and not single_account:
+                    continue
+                merged[item.tweet_id] = item
+
         return sorted(merged.values(), key=lambda it: it.created_at)
 
     def fetch_current_ids(self) -> set[str]:
@@ -229,7 +315,7 @@ class TwitterReader:
         replies can be marked seen/ignored before live processing begins.
         """
         ids: set[str] = set()
-        for path, source in ((_QUOTES_PATH, CommandSource.QUOTE), (_REPLIES_PATH, CommandSource.REPLY)):
+        for path in (_QUOTES_PATH, _REPLIES_PATH, _REPLIES_V2_PATH):
             cursor = ""
             for _ in range(_MAX_PAGES_STARTUP):
                 params: dict[str, object] = {"tweetId": self.source_tweet_id}
@@ -243,7 +329,7 @@ class TwitterReader:
                     break
                 for raw in rows:
                     tid = raw.get("id")
-                    if tid:
+                    if tid and str(tid) != self.source_tweet_id:
                         ids.add(str(tid))
                 if not payload.get("has_next_page"):
                     break
