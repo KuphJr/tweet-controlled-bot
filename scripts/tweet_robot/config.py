@@ -236,6 +236,13 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def normalize_handle(handle: str | None) -> str:
     """Lower-case and strip a leading '@' for case-insensitive handle compares."""
     if not handle:
@@ -288,7 +295,11 @@ class AppConfig:
     max_queue_size: int = 5
     policy_timeout_s: int = 30
     policy_error_retries: int = 2
-    replies_v2_poll_interval_s: float = 180.0
+    twitterapi_stream_enabled: bool = True
+    twitterapi_stream_reconnect_s: float = 90.0
+    twitterapi_stream_rule_interval_s: float = 5.0
+    twitterapi_stream_rule_tag_prefix: str = "tweet_robot"
+    replies_v2_poll_interval_s: float = 300.0
     replies_v2_max_pages_per_poll: int = 1
 
     # Confidence gating
@@ -319,7 +330,7 @@ class AppConfig:
     vision_examples_dir: Path = field(default_factory=lambda: VISION_EXAMPLES_DIR)
 
     # Runtime toggles (set by CLI)
-    poll_interval_s: float = 15.0
+    poll_interval_s: float = 300.0
     dry_run: bool = False
     no_tts: bool = False
     no_robot: bool = False
@@ -346,7 +357,11 @@ class AppConfig:
             max_queue_size=_env_int("MAX_QUEUE_SIZE", 5),
             policy_timeout_s=_env_int("POLICY_TIMEOUT_S", 30),
             policy_error_retries=_env_int("POLICY_ERROR_RETRIES", 2),
-            replies_v2_poll_interval_s=_env_float("REPLIES_V2_POLL_INTERVAL_S", 180.0),
+            twitterapi_stream_enabled=_env_bool("TWITTERAPI_STREAM_ENABLED", True),
+            twitterapi_stream_reconnect_s=_env_float("TWITTERAPI_STREAM_RECONNECT_S", 90.0),
+            twitterapi_stream_rule_interval_s=_env_float("TWITTERAPI_STREAM_RULE_INTERVAL_S", 5.0),
+            twitterapi_stream_rule_tag_prefix=_env_str("TWITTERAPI_STREAM_RULE_TAG_PREFIX", "tweet_robot"),
+            replies_v2_poll_interval_s=_env_float("REPLIES_V2_POLL_INTERVAL_S", 300.0),
             replies_v2_max_pages_per_poll=_env_int("REPLIES_V2_MAX_PAGES_PER_POLL", 1),
             command_confidence_threshold=_env_float("COMMAND_CONFIDENCE_THRESHOLD", 0.5),
             vision_confidence_threshold=_env_float("VISION_CONFIDENCE_THRESHOLD", 0.55),

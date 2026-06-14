@@ -44,6 +44,7 @@ from robot_policy_runner import RobotPolicyRunner
 from state_store import StateStore
 from tts import TTS
 from twitter_reader import RawItem, TwitterReader
+from twitter_stream_reader import TwitterStreamReader
 from workspace_detector import WorkspaceDetector
 from x_post_writer import XPostWriter
 
@@ -134,6 +135,7 @@ class TweetRobotController:
         self._simulating = cfg.dry_run or cfg.no_robot
 
         self._poller_thread: Thread | None = None
+        self._stream_reader: TwitterStreamReader | None = None
 
     @property
     def restart_requested(self) -> bool:
@@ -144,6 +146,16 @@ class TweetRobotController:
     # ================================================================== #
 
     def start_polling(self) -> None:
+        if self.cfg.twitterapi_stream_enabled:
+            self._stream_reader = TwitterStreamReader(
+                self.cfg,
+                source_tweet_id=self.source_tweet_id,
+                start_time=self.reader.start_time,
+                shutdown_event=self.shutdown_event,
+                on_item=self._handle_stream_item,
+            )
+            self._stream_reader.start()
+
         self._poller_thread = Thread(target=self._poll_loop, name="poller", daemon=True)
         self._poller_thread.start()
 
@@ -169,6 +181,8 @@ class TweetRobotController:
 
         with self._lock:
             self._state = ControllerState.SHUTTING_DOWN
+        if self._stream_reader is not None:
+            self._stream_reader.stop()
         logger.info("Controller executor loop exited (shutting down).")
 
     def _next_command(self) -> Command | None:
@@ -220,10 +234,24 @@ class TweetRobotController:
                     self.state_store.mark_seen(item.tweet_id)
         self.state_store.save()
 
+    def _handle_stream_item(self, item: RawItem) -> None:
+        if self.shutdown_event.is_set():
+            return
+        try:
+            self._handle_item(item)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed handling streamed item %s (marking seen).", item.tweet_id)
+            with self._lock:
+                self.state_store.mark_seen(item.tweet_id)
+        self.state_store.save()
+
     def _handle_item(self, item: RawItem) -> None:
         with self._lock:
             if self.state_store.is_seen(item.tweet_id):
                 return
+            # Claim the item before doing slower parsing/posting work so the
+            # poller and WebSocket cannot enqueue the same tweet concurrently.
+            self.state_store.mark_seen(item.tweet_id)
         author_norm = normalize_handle(item.author_handle)
 
         # In separate-account mode, never ingest the posting account's own replies.

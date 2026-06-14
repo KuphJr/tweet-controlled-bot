@@ -16,7 +16,9 @@ the same `@KuphDev` account that posted the stream tweet.
 ## End-to-end flow
 
 ```
-X quote/comment ──> TwitterReader (TwitterApi.io) ──> CommandParser (OpenAI)
+X quote/comment ──> TwitterApi.io WebSocket ─┐
+                                             ├──> CommandParser (OpenAI)
+Slow REST fallback ─────────────────────────┘
                                                           │ valid? (enum + confidence)
                                                           ▼
                               FIFO queue (per-author limit, immediate ack reply)
@@ -32,11 +34,13 @@ Per command:
 
 1. Acknowledge immediately on accept ("Queued! You're #N…").
 2. Capture a top-down image, detect the current target state.
-3. If a duck is on the target, run `remove_<color>`, wait 0.5s, verify the target is clear.
+3. If a duck is on the target, run `remove_<color>`.
    (If the target is already empty, skip removal.)
-4. Run `place_<requested_color>`, wait 0.5s, verify the requested color is on the target.
+4. Run `place_<requested_color>`.
 5. On any policy/vision/verification failure → ERROR state, narrate "Error
    encountered", and notify `@KuphDev`. Success posts **no** reply (the stream shows it).
+   Post-remove/post-place vision verification is currently disabled for speed;
+   initial vision is still used to decide which remove policy to run.
 
 ---
 
@@ -49,7 +53,8 @@ Per command:
 | `command_parser.py` | OpenAI strict-JSON parse of text → `RequestedColor` + confidence gating. |
 | `workspace_detector.py` | OpenAI vision strict-JSON → `WorkspaceState`, with optional folder-mapped few-shot examples and retry-once. |
 | `reply_generator.py` | Short, fun, context-aware public replies — every category has a deterministic fallback. Cosmetic only. |
-| `twitter_reader.py` | Read-only TwitterApi.io polling of **quotes + replies/sub-replies**, no-backfill startup, cross-source dedup, generated-self-reply loop guard. |
+| `twitter_stream_reader.py` | Primary low-latency TwitterApi.io WebSocket ingestion for source-conversation replies/sub-replies. |
+| `twitter_reader.py` | Slow read-only TwitterApi.io REST fallback for **quotes + replies/sub-replies**, no-backfill startup, cross-source dedup, generated-self-reply loop guard. |
 | `x_post_writer.py` | Official X API (Tweepy) posting from `@KuphDev` with reply targeting, two-tier rate limiting, and failure tolerance; `--dry-run` or blank creds → log-only. |
 | `tts.py` | Non-blocking ElevenLabs synth + configurable external player (`ffplay`/`aplay`/`paplay`); serialized so narrations do not overlap. |
 | `state_store.py` | Atomic JSON persistence (seen/processed/failed IDs, flags, rate-limit timestamps). Queue is **not** replayed on restart. |
@@ -75,7 +80,7 @@ Per command:
    | Var(s) | Where to get it |
    | --- | --- |
    | `OPENAI_API_KEY`, `OPENAI_COMMAND_MODEL`, `OPENAI_VISION_MODEL` | platform.openai.com. Defaults: `gpt-5.4-mini` for command parsing + reply text (fast/cheap), `gpt-5.5` for vision (SOTA, for reliable success/error detection). |
-   | `TWITTERAPI_IO_API_KEY` | twitterapi.io — **read** side (quotes + replies). |
+   | `TWITTERAPI_IO_API_KEY`, `TWITTERAPI_STREAM_*` | twitterapi.io — WebSocket command ingestion + slow REST fallback. |
    | `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` | developer.x.com — OAuth 1.0a **user-context** creds for `@KuphDev`, the same account that posts the stream tweet and replies. No bearer token needed. |
    | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID` | elevenlabs.io — optional TTS. |
    | `AUDIO_PLAYER_CMD` | Ubuntu playback command; the audio file path is appended as the last arg. `ffplay -nodisp -autoexit -loglevel quiet` (default), `paplay`, or `aplay`. ElevenLabs returns MP3 — `ffplay` handles it directly; `aplay`/`paplay` expect WAV. |
@@ -125,7 +130,11 @@ Ramp up safely:
 uv run python scripts/tweet_robot/run_tweet_robot.py \
     --source-tweet-id 1234567890123456789 --no-robot --dry-run
 
-# 2) Full live run.
+# 2) Configure the source-specific TwitterApi.io WebSocket rule once per stream tweet.
+uv run python scripts/tweet_robot/setup_twitterapi_stream_rule.py \
+    --source-tweet-id 1234567890123456789
+
+# 3) Full live run. WebSocket is primary; REST polling is slow fallback.
 uv run python scripts/tweet_robot/run_tweet_robot.py --source-tweet-id 1234567890123456789
 ```
 
@@ -134,7 +143,7 @@ uv run python scripts/tweet_robot/run_tweet_robot.py --source-tweet-id 123456789
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--source-tweet-id <id>` | — | Required for live runs. The tweet users quote/comment on. |
-| `--poll-interval-s <s>` | `15` | Seconds between standard TwitterApi.io quote/reply polls. The supplemental `replies/v2` scan defaults to every 180s and is throttled separately by env. |
+| `--poll-interval-s <s>` | `300` | Seconds between fallback TwitterApi.io REST quote/reply polls. WebSocket ingestion is primary. |
 | `--dry-run` | off | Do not move the robot and **do not post** (log-only writer). Still parses, captures/checks images, generates intended replies, and logs. Verification mismatches are logged, not failed. |
 | `--no-tts` | off | Disable ElevenLabs narration (log intended speech). |
 | `--no-robot` | off | Skip policy execution; vision still runs via a standalone camera open if available. |
@@ -176,6 +185,9 @@ a normal command.
   and sub-replies in the source conversation can be commands. To avoid feedback
   loops, self-authored `@KuphDev` sub-replies are ignored, while direct replies
   to the source tweet and quotes can still be admin or normal commands.
+- WebSocket ingestion is primary. The setup script creates/activates a
+  `conversation_id:<source_tweet_id>` TwitterApi.io filter rule. REST polling is
+  intentionally slow and exists as a fallback/recovery path.
 - Posting is limited by default to: queued acknowledgements, invalid-command
   replies, queue-full / duplicate-author replies, error notifications, and
   admin/status replies. **No success replies.**
@@ -194,6 +206,8 @@ a normal command.
 - **Tune behavior** via env: `MAX_REPLIES_PER_HOUR`, `ABSOLUTE_MAX_POSTS_PER_HOUR`,
   `MAX_QUEUE_SIZE`, `POLICY_TIMEOUT_S`, `POLICY_ERROR_RETRIES`,
   `COMMAND_CONFIDENCE_THRESHOLD`, `VISION_CONFIDENCE_THRESHOLD`,
+  `TWITTERAPI_STREAM_ENABLED`, `TWITTERAPI_STREAM_RECONNECT_S`,
+  `TWITTERAPI_STREAM_RULE_INTERVAL_S`, `TWITTERAPI_STREAM_RULE_TAG_PREFIX`,
   `REPLIES_V2_POLL_INTERVAL_S`, `REPLIES_V2_MAX_PAGES_PER_POLL`,
   `CAMERA_WARMUP_S`, `POST_POLICY_WAIT_S`, `TTS_TIMEOUT_S`.
 - **Change voice/models**: `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID`,
