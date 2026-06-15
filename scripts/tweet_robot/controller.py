@@ -5,7 +5,7 @@ Threads:
     rules, enqueues valid user commands (with immediate acknowledgement), and
     dispatches admin commands.
   * Executor (main thread, via ``run()``): pops one command at a time and runs
-    the remove->place pipeline. Never runs two policies concurrently.
+    either remove-only or remove->place. Never runs two policies concurrently.
 
 Key behaviors (see the plan):
   * Per-author limit: one active-or-queued command per author.
@@ -29,12 +29,12 @@ from threading import Event, Lock, Thread
 from config import (
     AppConfig,
     Command,
+    CommandKind,
     CommandSource,
     ControllerState,
     PolicyAction,
     PolicyResult,
     WorkspaceState,
-    color_on_target_state,
     get_policy_path,
     normalize_handle,
 )
@@ -71,7 +71,7 @@ _ABORTED = "__aborted__"
 _GENERATED_SELF_REPLY_FRAGMENTS = (
     "queued!",
     "you're #",
-    "I'll place",
+    "i'll place",
     "already have a command",
     "one request at a time",
     "queue is full",
@@ -308,7 +308,7 @@ class TweetRobotController:
             return
 
         parsed = self.parser.parse(item.text)
-        if not parsed.valid or parsed.requested_color is None:
+        if not parsed.valid or parsed.command_kind is None:
             logger.info("Invalid command from @%s: %r (%s)", item.author_handle, item.text, parsed.reason)
             if author_norm == self.cfg.bot_handle_norm:
                 logger.info("Ignoring invalid self-authored item %s without replying.", item.tweet_id)
@@ -340,6 +340,7 @@ class TweetRobotController:
                     author_handle=item.author_handle,
                     author_name=item.author_name,
                     raw_text=item.text,
+                    command_kind=parsed.command_kind,
                     requested_color=parsed.requested_color,
                     enqueued_at=time.time(),
                     replies_attempted=["accepted_ack"],
@@ -368,8 +369,9 @@ class TweetRobotController:
             )
         else:
             logger.info(
-                "Queued %s command from @%s (#%s).",
-                parsed.requested_color.value,
+                "Queued %s command%s from @%s (#%s).",
+                parsed.command_kind.value,
+                f" ({parsed.requested_color.value})" if parsed.requested_color is not None else "",
                 item.author_handle,
                 position,
             )
@@ -378,6 +380,7 @@ class TweetRobotController:
                     ReplyCategory.ACCEPTED,
                     author_name=item.author_name,
                     original_text=item.text,
+                    command_kind=parsed.command_kind,
                     color=parsed.requested_color,
                     position=position,
                 ),
@@ -519,13 +522,22 @@ class TweetRobotController:
         self.state_store.save()
 
     def _pipeline(self, cmd: Command, log_entry: dict) -> str | None:
-        """Run remove->place. Returns a failure reason, ``_ABORTED``, or None."""
+        """Run remove-only or remove->place. Returns failure reason, ``_ABORTED``, or None."""
         req = cmd.requested_color
 
-        request_tts = (
-            f"Executing the request from {cmd.author_name} @{cmd.author_handle} "
-            f"to place the {req.value} duck on the target."
-        )
+        if cmd.command_kind is CommandKind.REMOVE:
+            request_tts = (
+                f"Executing the request from {cmd.author_name} @{cmd.author_handle} "
+                "to remove the duck from the target."
+            )
+        elif cmd.command_kind is CommandKind.PLACE and req is not None:
+            request_tts = (
+                f"Executing the request from {cmd.author_name} @{cmd.author_handle} "
+                f"to place the {req.value} duck on the target."
+            )
+        else:
+            return "invalid queued command: missing command kind or requested color"
+
         log_entry["tts_attempted"].append(request_tts)
         self.tts.speak(request_tts)
 
@@ -556,7 +568,7 @@ class TweetRobotController:
 
             # Post-removal verification is intentionally disabled for speed. The
             # initial vision step above is still required to choose the correct
-            # removal policy, and final placement verification still runs below.
+            # removal policy.
             #
             # if self._interruptible_wait(self.cfg.post_policy_wait_s):
             #     return _ABORTED
@@ -572,7 +584,13 @@ class TweetRobotController:
             # before.state == ERROR while simulating: nothing to remove deterministically.
             logger.info("Simulating: initial state %s, skipping removal.", before.state.value)
 
+        if cmd.command_kind is CommandKind.REMOVE:
+            return None
+
         # --- 4. Placement ---
+        if req is None:
+            return "invalid place command: missing requested color"
+
         placement_tts = f"Placing the {req.value} duck on the target."
         log_entry["tts_attempted"].append(placement_tts)
         self.tts.speak(placement_tts)
@@ -670,7 +688,8 @@ class TweetRobotController:
             "author_handle": cmd.author_handle,
             "author_name": cmd.author_name,
             "raw_text": cmd.raw_text,
-            "parsed_command": cmd.requested_color.value,
+            "parsed_command": cmd.command_kind.value,
+            "requested_color": cmd.requested_color.value if cmd.requested_color is not None else None,
             "workspace_state_before": None,
             "workspace_state_after_removal": None,
             "workspace_state_after_place": None,

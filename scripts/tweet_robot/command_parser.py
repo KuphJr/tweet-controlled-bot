@@ -1,10 +1,11 @@
 """LLM command parsing into strict, validated enum values.
 
 Turns free-form tweet/comment text like "put the green duck on the target",
-"orange please", or "do pink" into a :class:`ParsedCommand` whose
-``requested_color`` is one of the validated :class:`RequestedColor` enum values
-(or ``None``). The LLM never selects a policy or code path — it only proposes a
-color + confidence, which deterministic code here validates and gates.
+"orange please", "do pink", or "remove the duck" into a
+:class:`ParsedCommand` whose ``command_kind`` is a validated enum and whose
+``requested_color`` is only present for place commands. The LLM never selects a
+policy or code path — it only proposes intent/color + confidence, which
+deterministic code here validates and gates.
 """
 
 from __future__ import annotations
@@ -14,22 +15,32 @@ import logging
 
 from openai import OpenAI
 
-from config import AppConfig, ParsedCommand, RequestedColor
+from config import AppConfig, CommandKind, ParsedCommand, RequestedColor
 
 logger = logging.getLogger("tweet_robot.command_parser")
 
 _ALLOWED_COLORS = [c.value for c in RequestedColor]
+_ALLOWED_COMMAND_KINDS = [k.value for k in CommandKind]
 
 _SYSTEM_PROMPT = (
-    "You parse short social-media messages directing a robot arm to place a "
-    "rubber duck of a specific color onto a target. The only valid colors are "
-    "orange, green, yellow, and pink. The user is asking for one color to be "
-    "placed on the target. Extract the requested color if the message clearly "
-    "asks for one of the four colors; otherwise mark it invalid. Be tolerant of "
-    "casual phrasing (e.g. 'green please', 'do orange', 'pink duck on target', "
-    "'move yellow'). If no clear color is requested to be placed on the target, or the "
-    "message is off-topic/ambiguous, set valid=false and requested_color=null. "
-    "Set confidence in [0,1] reflecting how sure you are."
+    "You parse short social-media messages directing a robot arm that manages "
+    "rubber ducks on a target. There are two valid command kinds:\n"
+    "1. place: place one duck color onto the target. Valid colors are orange, "
+    "green, yellow, and pink. For place commands, command_kind='place' and "
+    "requested_color must be that color.\n"
+    "2. remove: remove/clear/take off whatever duck is currently on the target. "
+    "For remove commands, command_kind='remove' and requested_color must be null; "
+    "the vision system will determine the actual color later.\n"
+    "Be tolerant of casual place phrasing (e.g. 'green please', 'do orange', "
+    "'pink duck on target', 'move yellow'). Be tolerant of clear remove phrasing "
+    "(e.g. 'remove the duck', 'clear the target', 'take the duck off', "
+    "'move the duck off the target'). If the user asks to remove/replace one duck "
+    "and then place one clear final color (e.g. 'remove yellow and place pink' or "
+    "'replace the pink duck with green'), treat it as a place command for that final "
+    "color; deterministic robot code will handle removing the current duck first. "
+    "If a message is ambiguous, asks for multiple final place colors, asks for an "
+    "unsupported arrangement, or is off-topic, set valid=false. Set confidence in [0,1] "
+    "reflecting how sure you are."
 )
 
 _JSON_SCHEMA = {
@@ -39,6 +50,10 @@ _JSON_SCHEMA = {
         "type": "object",
         "properties": {
             "valid": {"type": "boolean"},
+            "command_kind": {
+                "type": ["string", "null"],
+                "enum": [*_ALLOWED_COMMAND_KINDS, None],
+            },
             "requested_color": {
                 "type": ["string", "null"],
                 "enum": [*_ALLOWED_COLORS, None],
@@ -46,7 +61,7 @@ _JSON_SCHEMA = {
             "confidence": {"type": "number"},
             "reason": {"type": "string"},
         },
-        "required": ["valid", "requested_color", "confidence", "reason"],
+        "required": ["valid", "command_kind", "requested_color", "confidence", "reason"],
         "additionalProperties": False,
     },
 }
@@ -67,15 +82,15 @@ class CommandParser:
         """Parse text into a validated :class:`ParsedCommand` (never raises)."""
         text = (raw_text or "").strip()
         if not text:
-            return ParsedCommand(False, None, 0.0, "empty message")
+            return ParsedCommand(False, None, None, 0.0, "empty message")
         if self._client is None:
-            return ParsedCommand(False, None, 0.0, "parser unavailable (no OpenAI key)")
+            return ParsedCommand(False, None, None, 0.0, "parser unavailable (no OpenAI key)")
 
         try:
             raw = self._call_llm(text)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Command parse LLM call failed.")
-            return ParsedCommand(False, None, 0.0, f"parser_error: {exc}")
+            return ParsedCommand(False, None, None, 0.0, f"parser_error: {exc}")
 
         return self._validate(raw)
 
@@ -100,6 +115,14 @@ class CommandParser:
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
 
+        kind_raw = raw.get("command_kind")
+        command_kind: CommandKind | None = None
+        if isinstance(kind_raw, str):
+            try:
+                command_kind = CommandKind(kind_raw.strip().lower())
+            except ValueError:
+                command_kind = None
+
         color_raw = raw.get("requested_color")
         color: RequestedColor | None = None
         if isinstance(color_raw, str):
@@ -110,16 +133,30 @@ class CommandParser:
 
         llm_valid = bool(raw.get("valid", False))
 
-        # Deterministic validity: requires a recognized color, LLM-claimed validity,
-        # AND confidence above the configured threshold. The enum (not LLM prose)
-        # is the source of truth for which policy can later run.
-        valid = llm_valid and color is not None and confidence >= self.cfg.command_confidence_threshold
+        # Deterministic validity: requires a recognized command kind, LLM-claimed
+        # validity, confidence above threshold, and the required enum fields for
+        # that command. The enum values, not LLM prose, drive policy selection.
+        if command_kind is CommandKind.PLACE:
+            valid = llm_valid and color is not None and confidence >= self.cfg.command_confidence_threshold
+        elif command_kind is CommandKind.REMOVE:
+            valid = llm_valid and confidence >= self.cfg.command_confidence_threshold
+            color = None
+        else:
+            valid = False
 
         if not valid and not reason:
-            if color is None:
+            if command_kind is None:
+                reason = "no recognized command kind (place/remove)"
+            elif command_kind is CommandKind.PLACE and color is None:
                 reason = "no recognized duck color (orange/green/yellow/pink)"
             elif confidence < self.cfg.command_confidence_threshold:
                 reason = f"low confidence ({confidence:.2f})"
 
         # Keep the detected color for logging; the controller only acts on it when valid.
-        return ParsedCommand(valid=valid, requested_color=color, confidence=confidence, reason=reason)
+        return ParsedCommand(
+            valid=valid,
+            command_kind=command_kind,
+            requested_color=color,
+            confidence=confidence,
+            reason=reason,
+        )

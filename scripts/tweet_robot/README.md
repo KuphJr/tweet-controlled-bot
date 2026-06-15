@@ -2,10 +2,11 @@
 
 Let people on X control a physical SO-101 arm during a livestream. Viewers
 **quote-tweet** or **comment (reply)** on a source tweet asking the robot to put
-one of four rubber ducks — **orange, green, yellow, pink** — on the target. The
-robot removes whatever duck is currently on the target (if any), places the
-requested one, narrates what it's doing with ElevenLabs TTS, and replies from
-the same `@KuphDev` account that posted the stream tweet.
+one of four rubber ducks — **orange, green, yellow, pink** — on the target, or to
+remove the current duck from the target. For place commands, the robot removes
+whatever duck is currently on the target (if any), places the requested one,
+narrates what it's doing with ElevenLabs TTS, and replies from the same
+`@KuphDev` account that posted the stream tweet.
 
 > **Design principle:** LLMs only *parse text* and *classify images*.
 > Deterministic, validated enums decide which policy runs. Raw model output never
@@ -25,7 +26,7 @@ Slow REST fallback ────────────────────�
                                                           │
                                                           ▼
    Executor: capture ─> WorkspaceDetector (OpenAI vision) ─> remove_<color> policy
-             ─> verify target clear ─> place_<requested> policy ─> verify on target
+             ─> optional place_<requested> policy
                           │                         │
                        TTS narration            XPostWriter (official X API)
 ```
@@ -36,7 +37,7 @@ Per command:
 2. Capture a top-down image, detect the current target state.
 3. If a duck is on the target, run `remove_<color>`.
    (If the target is already empty, skip removal.)
-4. Run `place_<requested_color>`.
+4. For place commands only, run `place_<requested_color>`.
 5. On any policy/vision/verification failure → ERROR state, narrate "Error
    encountered", and notify `@KuphDev`. Success posts **no** reply (the stream shows it).
    Post-remove/post-place vision verification is currently disabled for speed;
@@ -50,7 +51,7 @@ Per command:
 | --- | --- |
 | `config.py` | Enums, dataclasses (`Command`, `PolicyResult`, …), `.env` loading, the 8 policy paths (env-overridable), all tunables. |
 | `robot_policy_runner.py` | Isolated `run_policy()` (build context → `StopAtNeutralStrategy` → teardown), `capture_workspace_image()`, `disable_torque_on_shutdown()`. Reuses the proven `scripts/run_so101_policy.py` strategy unchanged. |
-| `command_parser.py` | OpenAI strict-JSON parse of text → `RequestedColor` + confidence gating. |
+| `command_parser.py` | OpenAI strict-JSON parse of text → place/remove command kind, optional `RequestedColor`, and confidence gating. |
 | `workspace_detector.py` | OpenAI vision strict-JSON → `WorkspaceState`, with optional folder-mapped few-shot examples and retry-once. |
 | `reply_generator.py` | Short, fun, context-aware public replies — every category has a deterministic fallback. Cosmetic only. |
 | `twitter_stream_reader.py` | Primary low-latency TwitterApi.io WebSocket ingestion for source-conversation replies/sub-replies. |
@@ -58,7 +59,7 @@ Per command:
 | `x_post_writer.py` | Official X API (Tweepy) posting from `@KuphDev` with reply targeting, two-tier rate limiting, and failure tolerance; `--dry-run` or blank creds → log-only. |
 | `tts.py` | Non-blocking ElevenLabs synth + configurable external player (`ffplay`/`aplay`/`paplay`); serialized so narrations do not overlap. |
 | `state_store.py` | Atomic JSON persistence (seen/processed/failed IDs, flags, rate-limit timestamps). Queue is **not** replayed on restart. |
-| `controller.py` | State machine, FIFO queue + per-author limit, acceptance rules, the remove→place pipeline, admin handling, JSONL logging. |
+| `controller.py` | State machine, FIFO queue + per-author limit, acceptance rules, remove-only / remove→place execution, admin handling, JSONL logging. |
 | `run_tweet_robot.py` | CLI entry point: wiring, signal handling, graceful shutdown, dry-run / no-robot modes. |
 
 ---

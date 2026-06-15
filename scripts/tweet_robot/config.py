@@ -54,6 +54,11 @@ class PolicyAction(str, Enum):
     REMOVE = "remove"
 
 
+class CommandKind(str, Enum):
+    PLACE = "place"
+    REMOVE = "remove"
+
+
 class WorkspaceState(str, Enum):
     """Vision-detected state of the target zone."""
 
@@ -119,6 +124,7 @@ class ParsedCommand:
     """Result of LLM command parsing, validated against ``RequestedColor``."""
 
     valid: bool
+    command_kind: CommandKind | None
     requested_color: RequestedColor | None
     confidence: float
     reason: str
@@ -145,7 +151,8 @@ class Command:
     author_handle: str
     author_name: str
     raw_text: str
-    requested_color: RequestedColor
+    command_kind: CommandKind
+    requested_color: RequestedColor | None
     enqueued_at: float
     replies_attempted: list[str] = field(default_factory=list)
     tts_attempted: list[str] = field(default_factory=list)
@@ -157,7 +164,8 @@ class Command:
             "author_handle": self.author_handle,
             "author_name": self.author_name,
             "raw_text": self.raw_text,
-            "requested_color": self.requested_color.value,
+            "command_kind": self.command_kind.value,
+            "requested_color": self.requested_color.value if self.requested_color is not None else None,
             "enqueued_at": self.enqueued_at,
             "replies_attempted": list(self.replies_attempted),
             "tts_attempted": list(self.tts_attempted),

@@ -17,7 +17,7 @@ from enum import Enum
 
 from openai import OpenAI
 
-from config import AppConfig, RequestedColor
+from config import AppConfig, CommandKind, RequestedColor
 
 logger = logging.getLogger("tweet_robot.reply_generator")
 
@@ -44,12 +44,17 @@ _LLM_ENHANCED = {
 
 _INTENT = {
     ReplyCategory.ACCEPTED: (
-        "Acknowledge that the user's request was accepted and queued. Mention the "
-        "duck color and their queue position. Upbeat and brief."
+        "Acknowledge that the user's duck request was accepted and queued. Mention "
+        "whether it is a place or remove request, include the duck color for place "
+        "requests only, and include their queue position. Never mention a duck "
+        "color for remove requests. "
+        "Upbeat and brief, feel free to make it funny or add little jokes if it's appropriate."
     ),
     ReplyCategory.INVALID: (
         "Politely say you couldn't understand the command and that they should ask "
-        "to place one of the colored rubber ducks: orange, green, yellow, or pink."
+        "to place one of the colored rubber ducks (orange, green, yellow, pink) or "
+        "to remove/clear the duck from the target. "
+        "Upbeat and brief, feel free to make it funny or add little jokes if it's appropriate."
     ),
     ReplyCategory.DUPLICATE_AUTHOR: (
         "Kindly tell the user they already have a command in the queue and to wait "
@@ -87,17 +92,20 @@ class ReplyGenerator:
         self,
         category: ReplyCategory,
         *,
+        command_kind: CommandKind | None,
         color: RequestedColor | None,
         position: int | None,
     ) -> str:
         color_str = color.value if color is not None else "requested"
         if category is ReplyCategory.ACCEPTED:
             pos = f"#{position}" if position is not None else "in line"
+            if command_kind is CommandKind.REMOVE:
+                return f"Queued! You're {pos}. I'll remove the duck from the target soon."
             return f"Queued! You're {pos}. I'll place the {color_str} duck soon."
         if category is ReplyCategory.INVALID:
             return (
                 "Sorry, I couldn't figure out the command. "
-                "Please ask for either the orange, green, yellow, or pink duck to be placed on the target."
+                "Please ask me to place orange, green, yellow, or pink, or to remove the duck."
             )
         if category is ReplyCategory.DUPLICATE_AUTHOR:
             return (
@@ -118,16 +126,17 @@ class ReplyGenerator:
         *,
         author_name: str = "",
         original_text: str = "",
+        command_kind: CommandKind | None = None,
         color: RequestedColor | None = None,
         position: int | None = None,
     ) -> str:
         """Return reply text for ``category`` (never raises)."""
-        fallback = self._fallback(category, color=color, position=position)
+        fallback = self._fallback(category, command_kind=command_kind, color=color, position=position)
         if category not in _LLM_ENHANCED or self._client is None:
             return fallback
 
         try:
-            enhanced = self._enhance(category, author_name, original_text, color, position)
+            enhanced = self._enhance(category, author_name, original_text, command_kind, color, position)
         except Exception:  # noqa: BLE001
             logger.exception("Reply LLM enhancement failed; using fallback.")
             return fallback
@@ -140,6 +149,7 @@ class ReplyGenerator:
         category: ReplyCategory,
         author_name: str,
         original_text: str,
+        command_kind: CommandKind | None,
         color: RequestedColor | None,
         position: int | None,
     ) -> str:
@@ -148,8 +158,12 @@ class ReplyGenerator:
             ctx_lines.append(f"Requester name: {author_name}")
         if original_text:
             ctx_lines.append(f"Their message: {original_text[:300]}")
+        if command_kind is not None:
+            ctx_lines.append(f"Command kind: {command_kind.value}")
         if color is not None:
             ctx_lines.append(f"Requested duck color: {color.value}")
+        if command_kind is CommandKind.REMOVE:
+            ctx_lines.append("For remove requests, do not mention any duck color.")
         if position is not None:
             ctx_lines.append(f"Queue position: #{position}")
 
