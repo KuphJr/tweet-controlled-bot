@@ -222,12 +222,12 @@ class TweetRobotController:
         items = self.reader.fetch_new(seen)
         if not items:
             return
-        logger.info("Discovered %d new item(s).", len(items))
+        logger.info("Discovered %d new item(s) via REST fallback polling.", len(items))
         for item in items:  # oldest-first
             if self.shutdown_event.is_set():
                 break
             try:
-                self._handle_item(item)
+                self._handle_item(item, ingest_source="rest")
             except Exception:  # noqa: BLE001
                 logger.exception("Failed handling item %s (marking seen).", item.tweet_id)
                 with self._lock:
@@ -237,21 +237,34 @@ class TweetRobotController:
     def _handle_stream_item(self, item: RawItem) -> None:
         if self.shutdown_event.is_set():
             return
+        logger.info(
+            "Received %s item %s from @%s via WebSocket.",
+            item.source.value,
+            item.tweet_id,
+            item.author_handle,
+        )
         try:
-            self._handle_item(item)
+            self._handle_item(item, ingest_source="websocket")
         except Exception:  # noqa: BLE001
             logger.exception("Failed handling streamed item %s (marking seen).", item.tweet_id)
             with self._lock:
                 self.state_store.mark_seen(item.tweet_id)
         self.state_store.save()
 
-    def _handle_item(self, item: RawItem) -> None:
+    def _handle_item(self, item: RawItem, *, ingest_source: str) -> None:
         with self._lock:
             if self.state_store.is_seen(item.tweet_id):
                 return
             # Claim the item before doing slower parsing/posting work so the
             # poller and WebSocket cannot enqueue the same tweet concurrently.
             self.state_store.mark_seen(item.tweet_id)
+        logger.info(
+            "Handling %s item %s from @%s via %s.",
+            item.source.value,
+            item.tweet_id,
+            item.author_handle,
+            ingest_source,
+        )
         author_norm = normalize_handle(item.author_handle)
 
         # In separate-account mode, never ingest the posting account's own replies.
@@ -271,13 +284,13 @@ class TweetRobotController:
             and item.in_reply_to_tweet_id
             and item.in_reply_to_tweet_id != self.source_tweet_id
         ):
-            logger.info("Ignoring self-authored sub-reply %s to prevent reply loops.", item.tweet_id)
+            logger.info("Ignoring self-authored sub-reply %s via %s to prevent reply loops.", item.tweet_id, ingest_source)
             with self._lock:
                 self.state_store.mark_seen(item.tweet_id)
             return
 
         if single_account and author_norm == self.cfg.admin_handle_norm and self._looks_like_generated_self_reply(item.text):
-            logger.info("Ignoring generated self-authored reply %s.", item.tweet_id)
+            logger.info("Ignoring generated self-authored reply %s via %s.", item.tweet_id, ingest_source)
             with self._lock:
                 self.state_store.mark_seen(item.tweet_id)
             return
@@ -292,9 +305,9 @@ class TweetRobotController:
                 return
             # Otherwise the admin is issuing a normal duck command -> fall through.
 
-        self._handle_user_command(item)
+        self._handle_user_command(item, ingest_source=ingest_source)
 
-    def _handle_user_command(self, item: RawItem) -> None:
+    def _handle_user_command(self, item: RawItem, *, ingest_source: str) -> None:
         author_norm = normalize_handle(item.author_handle)
 
         # ERROR state: refuse new commands with a clear message.
@@ -309,7 +322,13 @@ class TweetRobotController:
 
         parsed = self.parser.parse(item.text)
         if not parsed.valid or parsed.command_kind is None:
-            logger.info("Invalid command from @%s: %r (%s)", item.author_handle, item.text, parsed.reason)
+            logger.info(
+                "Invalid command from @%s via %s: %r (%s)",
+                item.author_handle,
+                ingest_source,
+                item.text,
+                parsed.reason,
+            )
             if author_norm == self.cfg.bot_handle_norm:
                 logger.info("Ignoring invalid self-authored item %s without replying.", item.tweet_id)
                 with self._lock:
@@ -369,10 +388,11 @@ class TweetRobotController:
             )
         else:
             logger.info(
-                "Queued %s command%s from @%s (#%s).",
+                "Queued %s command%s from @%s via %s (#%s).",
                 parsed.command_kind.value,
                 f" ({parsed.requested_color.value})" if parsed.requested_color is not None else "",
                 item.author_handle,
+                ingest_source,
                 position,
             )
             self._post_reply(
